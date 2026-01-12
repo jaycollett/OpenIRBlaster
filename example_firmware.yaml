@@ -1,0 +1,203 @@
+substitutions:
+  name: openirblaster
+  friendly_name: OpenIRBlaster
+  ap_ssid: "OpenIRBlaster Setup"
+  default_carrier_hz: "38000"
+
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+  name_add_mac_suffix: true
+  project:
+    name: "jaycollett.openirblaster"
+    version: "0.1.2"
+
+dashboard_import:
+  package_import_url: github://jaycollett/OpenIRBlaster/Firmware/ir_blaster.yaml@main
+  import_full_config: true
+
+esp8266:
+  board: esp12e
+
+logger:
+  level: INFO
+
+api:
+  reboot_timeout: 0s
+  services:
+    - service: send_ir_raw
+      variables:
+        carrier_hz: int
+        code: int[]
+      then:
+        - remote_transmitter.transmit_raw:
+            transmitter_id: ir_tx
+            carrier_frequency: !lambda "return (float)carrier_hz;"
+            code: !lambda "return code;"
+
+ota:
+  - platform: esphome
+
+wifi:
+  min_auth_mode: WPA2
+  # Helps stability / reduces peak demand a bit on ESP8266
+  output_power: 8.5dB
+  ap:
+    ssid: ${ap_ssid}
+    # open fallback AP (no password)
+    ap_timeout: 0s
+
+captive_portal:
+
+# For ISO-ish timestamps in the learned event payload (sourced from HA time)
+time:
+  - platform: homeassistant
+    id: ha_time
+
+globals:
+  - id: learn_enabled
+    type: bool
+    restore_value: no
+    initial_value: "false"
+
+sensor:
+  - platform: uptime
+    name: "Uptime"
+
+  - platform: wifi_signal
+    id: wifi_rssi
+    name: "WiFi Signal"
+    update_interval: 30s
+
+switch:
+  - platform: restart
+    name: "Restart"
+
+  # Required by HA integration spec: controls whether device emits learned notifications
+  - platform: template
+    name: "IR Learning Mode"
+    id: ir_learning_mode
+    restore_mode: ALWAYS_OFF
+    optimistic: true
+    turn_on_action:
+      - lambda: "id(learn_enabled) = true;"
+    turn_off_action:
+      - lambda: "id(learn_enabled) = false;"
+
+button:
+  - platform: template
+    name: "Clear Last Learned IR"
+    on_press:
+      - text_sensor.template.publish:
+          id: last_ir_raw_snippet
+          state: ""
+
+text_sensor:
+  - platform: wifi_info
+    ip_address:
+      name: "IP Address"
+    ssid:
+      name: "Connected SSID"
+    mac_address:
+      name: "MAC Address"
+
+  # Optional/acceptable debug channel (spec allows a compact sensor + event)
+  - platform: template
+    name: "Last Learned IR (payload)"
+    id: last_ir_raw_snippet
+    update_interval: never
+
+# IR Receiver (TSOP38238) on GPIO4
+remote_receiver:
+  id: ir_rx
+  pin:
+    number: GPIO4
+    mode: INPUT_PULLUP
+    inverted: true
+
+  # ESP8266-safe: avoid dump: all (can contribute to RAM pressure)
+  dump: raw
+
+  # Stable value from prior testing
+  buffer_size: 7kb
+
+  tolerance: 50%
+  filter: 50us
+  idle: 25ms
+
+  on_raw:
+    then:
+      - if:
+          condition:
+            lambda: "return id(learn_enabled);"
+          then:
+            # Preferred learned notification mechanism: fire an HA event
+            - homeassistant.event:
+                event: esphome.openirblaster_learned
+                data:
+                  device_id: !lambda |-
+                    return App.get_name();
+                  carrier_hz: !lambda |-
+                    return (int) atoi("${default_carrier_hz}");
+                  pulses_json: !lambda |-
+                    const size_t MAX_PULSES = 600;
+                    size_t n = x.size();
+                    if (n > MAX_PULSES) n = MAX_PULSES;
+
+                    std::string s;
+                    s.reserve(8 * n + 2);
+                    s += "[";
+                    for (size_t i = 0; i < n; i++) {
+                      s += to_string((int) x[i]);
+                      if (i + 1 < n) s += ",";
+                    }
+                    s += "]";
+                    return s;
+                  timestamp: !lambda |-
+                    auto now = id(ha_time).now();
+                    if (now.is_valid()) return now.strftime("%Y-%m-%dT%H:%M:%S%z");
+                    return std::string("");
+                  rssi: !lambda |-
+                    if (isnan(id(wifi_rssi).state)) return 0;
+                    return (int) id(wifi_rssi).state;
+
+
+
+            # Optional debug sensor payload (compact JSON-like string, bounded)
+            - lambda: |-
+                const size_t MAX_PULSES = 600;
+                size_t n = x.size();
+                if (n > MAX_PULSES) n = MAX_PULSES;
+
+                std::string ts;
+                auto now = id(ha_time).now();
+                if (now.is_valid()) ts = now.strftime("%Y-%m-%dT%H:%M:%S%z");
+
+                int rssi = 0;
+                if (!isnan(id(wifi_rssi).state)) rssi = (int) id(wifi_rssi).state;
+
+                std::string out;
+                out.reserve(2000);
+                out += "{";
+                out += "\"device_id\":\"" + App.get_name() + "\",";
+                out += "\"carrier_hz\":" + to_string((int) atoi("${default_carrier_hz}")) + ",";
+                out += "\"rssi\":" + to_string(rssi) + ",";
+                out += "\"timestamp\":\"" + ts + "\",";
+                out += "\"pulses\":[";
+                for (size_t i = 0; i < n; i++) {
+                  out += to_string((int) x[i]);
+                  if (i + 1 < n) out += ",";
+                }
+                out += "]";
+                if (x.size() > MAX_PULSES) out += ",\"truncated\":true";
+                out += "}";
+                id(last_ir_raw_snippet).publish_state(out);
+
+            # Auto-disable after first successful capture to prevent multiple events per session
+            - switch.turn_off: ir_learning_mode
+
+# IR Transmitter on GPIO14 (driving the IRLML6344 gate)
+remote_transmitter:
+  id: ir_tx
+  pin: GPIO14
+  carrier_duty_percent: 50%

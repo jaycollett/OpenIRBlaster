@@ -1,0 +1,19 @@
+# Development dependencies for OpenIRBlaster
+
+# Testing
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
+pytest-cov>=4.1.0
+pytest-homeassistant-custom-component>=0.13.0
+
+# Code quality
+ruff>=0.1.0
+mypy>=1.7.0
+black>=23.11.0
+isort>=5.12.0
+
+# Pre-commit hooks (optional)
+pre-commit>=3.5.0
+
+# Home Assistant (for type checking)
+homeassistant>=2024.1.0
