@@ -132,6 +132,7 @@ remote_receiver:
           condition:
             lambda: "return id(learn_enabled);"
           then:
+            # Preferred learned notification mechanism: fire an HA event
             - homeassistant.event:
                 event: esphome.openirblaster_learned
                 data:
@@ -161,6 +162,7 @@ remote_receiver:
                     if (isnan(id(wifi_rssi).state)) return 0;
                     return (int) id(wifi_rssi).state;
 
+            # Optional debug sensor payload (compact JSON-like string, bounded)
             - lambda: |-
                 const size_t MAX_PULSES = 600;
                 size_t n = x.size();
