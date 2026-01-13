@@ -1,179 +1,89 @@
-# OpenIRBlaster Integration for Home Assistant
+# OpenIRBlaster for Home Assistant
 
-A custom Home Assistant integration for managing infrared remote codes with ESPHome-based IR blaster devices.
+A Home Assistant custom integration that lets you learn, store, and replay infrared remote control codes using ESPHome devices.
 
 [![GitHub Release][releases-shield]][releases]
 [![License][license-shield]](LICENSE)
 [![hacs][hacsbadge]][hacs]
 
-## Overview
+## What Does It Do?
 
-OpenIRBlaster is a Home Assistant custom integration that provides a complete solution for learning, storing, and transmitting infrared remote control codes using ESPHome devices. It offers an intuitive interface for capturing IR signals from your existing remotes and replaying them to control your devices.
+Turn any ESPHome device with an IR receiver and transmitter into a universal remote control for your smart home:
 
-## Features
+- **Learn** IR codes from any remote control
+- **Store** unlimited codes with custom names
+- **Replay** codes with a single button press or automation
+- **Control** all your IR devices through Home Assistant
 
-- **Learn IR Codes**: Capture infrared signals from any remote control
-- **Store Unlimited Codes**: Save learned codes with custom names, tags, and notes
-- **One-Click Transmission**: Send stored IR codes with a single button press
-- **Multi-Device Support**: Manage multiple IR blaster devices simultaneously
-- **Real-Time Status**: Monitor learning session state and last learned code details
-- **Service Integration**: Full Home Assistant service support for automation
-- **Collision-Safe Storage**: Automatic handling of duplicate code names
-- **ESPHome Native**: Seamless integration with ESPHome firmware
+Perfect for controlling TVs, AC units, fans, projectors, and other infrared-controlled devices.
 
 ## Requirements
 
-- Home Assistant 2024.1 or newer (Python 3.12+)
-- ESPHome device with IR receiver and transmitter
-- OpenIRBlaster ESPHome firmware (see `hardware_config/factory_config.yaml`)
+- Home Assistant 2024.1+ (Python 3.12+)
+- ESPHome device with:
+  - IR receiver (TSOP38238 or similar)
+  - IR transmitter (LED + transistor)
+  - OpenIRBlaster firmware installed
+
+## Hardware Setup
+
+### Recommended Hardware
+
+- **ESP8266** (ESP-12E) or **ESP32**
+- **IR Receiver**: TSOP38238 (GPIO4)
+- **IR LED**: 950nm IR LED (GPIO14)
+- **Transistor**: IRLML6344 or similar for LED driving
+
+### Firmware Installation
+
+1. Copy the ESPHome configuration from `hardware/firmware/factory_config.yaml`
+2. Customize the WiFi settings and device name
+3. Flash to your ESP device using ESPHome
+4. Verify the device appears in Home Assistant's ESPHome integration
+
+See the `hardware/` directory for circuit diagrams and detailed build instructions.
 
 ## Installation
 
-### HACS (Recommended)
+### HACS (Recommended - Coming Soon)
 
-_Coming soon_
+_This integration will be available via HACS once submitted to the default repository._
 
 ### Manual Installation
 
-1. Download the latest release from GitHub
-2. Extract the `openirblaster` folder to your `custom_components` directory
+1. Download the [latest release](https://github.com/jaycollett/OpenIRBlaster/releases)
+2. Extract and copy the `custom_components/openirblaster` folder to your Home Assistant `custom_components` directory
 3. Restart Home Assistant
+4. Go to **Settings** → **Devices & Services** → **Add Integration**
+5. Search for "OpenIRBlaster" and follow the setup wizard
 
-## Configuration
+## Quick Start Guide
 
-### Adding the Integration
+### 1. Add the Integration
 
-1. Go to **Settings** → **Devices & Services**
-2. Click **Add Integration**
+1. Navigate to **Settings** → **Devices & Services**
+2. Click **+ Add Integration**
 3. Search for "OpenIRBlaster"
-4. Enter your ESPHome device name (e.g., `openirblaster-64c999`)
-5. Enter a unique device ID (or use the default)
-6. Verify the learning mode switch entity ID
-7. Click **Submit**
+4. Select your ESPHome device from the dropdown
+5. Click **Submit**
 
-### ESPHome Configuration
+The integration will automatically discover your ESPHome IR blaster device and set up the necessary entities.
 
-Your ESPHome device must have the OpenIRBlaster firmware installed. The integration expects:
+### 2. Learn Your First IR Code
 
-- An IR receiver for learning codes
-- An IR transmitter for sending codes
-- A learning mode switch entity
-- Event publishing when codes are learned
+1. In your device's entity list, find the **Code Name** text field
+2. Enter a name for the code you want to learn (e.g., "TV Power")
+3. Click the **Learn IR Code** button
+4. Within 30 seconds, point your remote at the IR receiver and press the button
+5. A new button entity will automatically appear with your code name
 
-See `hardware_config/factory_config.yaml` for a complete ESPHome configuration example.
+That's it! You can now press the new button to transmit the IR code.
 
-## Usage
-
-### Learning IR Codes
-
-1. Press the **Learn IR Code** button entity
-2. Point your remote at the IR receiver
-3. Press the button on your remote
-4. The integration captures the IR signal
-5. Open the integration's options to save the code with a name
-
-### Sending IR Codes
-
-Once codes are saved, you'll see button entities for each code:
-
-- Press the button to transmit the IR code
-- Use in automations and scripts
-- Call via services for advanced control
-
-### Entities Created
-
-For each OpenIRBlaster device, the integration creates:
-
-**Buttons:**
-- `button.{device}_learn_ir_code` - Start learning mode
-- `button.{device}_send_last_learned` - Send the most recently learned code
-- `button.{device}_{code_name}` - One button per saved code
-
-**Sensors:**
-- `sensor.{device}_last_learned_code_name` - Name/ID of last learned code
-- `sensor.{device}_last_learned_timestamp` - When the code was learned
-- `sensor.{device}_last_learned_pulse_count` - Number of pulses in the code
-
-## Services
-
-### `openirblaster.learn_start`
-
-Start a learning session.
-
-```yaml
-service: openirblaster.learn_start
-data:
-  config_entry_id: "01KESZQ4GF6WSK5XBAA19N96MM"
-  timeout: 30
-```
-
-### `openirblaster.send_code`
-
-Send a stored IR code.
-
-```yaml
-service: openirblaster.send_code
-data:
-  config_entry_id: "01KESZQ4GF6WSK5XBAA19N96MM"
-  code_id: "tv_power"
-```
-
-You can also override the stored code parameters:
-
-```yaml
-service: openirblaster.send_code
-data:
-  config_entry_id: "01KESZQ4GF6WSK5XBAA19N96MM"
-  code_id: "custom_code"
-  carrier_hz: 38000
-  pulses: [9000, 4500, 560, 560, ...]
-```
-
-### `openirblaster.delete_code`
-
-Delete a stored code.
-
-```yaml
-service: openirblaster.delete_code
-data:
-  config_entry_id: "01KESZQ4GF6WSK5XBAA19N96MM"
-  code_id: "tv_power"
-```
-
-### `openirblaster.rename_code`
-
-Rename a stored code.
-
-```yaml
-service: openirblaster.rename_code
-data:
-  config_entry_id: "01KESZQ4GF6WSK5XBAA19N96MM"
-  code_id: "tv_power"
-  new_name: "TV Power Toggle"
-```
-
-## Automation Examples
-
-### Learn and Save Code on Schedule
+### 3. Use in Automations
 
 ```yaml
 automation:
-  - alias: "Learn IR Code Every Morning"
-    trigger:
-      - platform: time
-        at: "08:00:00"
-    action:
-      - service: openirblaster.learn_start
-        data:
-          config_entry_id: "01KESZQ4GF6WSK5XBAA19N96MM"
-          timeout: 60
-```
-
-### Send Code Based on Condition
-
-```yaml
-automation:
-  - alias: "Turn off TV at Night"
+  - alias: "Turn off TV at bedtime"
     trigger:
       - platform: time
         at: "23:00:00"
@@ -183,121 +93,148 @@ automation:
           entity_id: button.openirblaster_64c999_tv_power
 ```
 
-## Storage
+## Entities Created
 
-Learned codes are stored in `.storage/openirblaster_{entry_id}.json` within your Home Assistant configuration directory. Each code includes:
+For each OpenIRBlaster device, you'll get:
 
-- Unique ID (slugified name)
+### Text Input
+- **Code Name** - Enter the name for the next IR code to learn
+
+### Buttons
+- **Learn IR Code** - Start learning mode (after entering a code name)
+- **Send Last Learned** - Replay the most recently learned code
+- **{Your Code Names}** - One button for each saved code
+- **Delete {Code Name}** - Remove a saved code
+
+### Sensors
+- **Last Learned Code Name** - Name of the most recent code
+- **Last Learned Timestamp** - When the last code was captured
+- **Last Learned Pulse Count** - Size of the last code (for debugging)
+
+## Advanced Features
+
+### Services
+
+The integration provides services for automation and scripting:
+
+#### `openirblaster.send_code`
+Send a stored IR code programmatically.
+
+```yaml
+service: openirblaster.send_code
+data:
+  config_entry_id: "01KESZQ4GF6WSK5XBAA19N96MM"
+  code_id: "tv_power"
+```
+
+#### `openirblaster.rename_code`
+Rename a stored code.
+
+```yaml
+service: openirblaster.rename_code
+data:
+  config_entry_id: "01KESZQ4GF6WSK5XBAA19N96MM"
+  code_id: "tv_power"
+  new_name: "Living Room TV Power"
+```
+
+#### `openirblaster.delete_code`
+Delete a stored code.
+
+```yaml
+service: openirblaster.delete_code
+data:
+  config_entry_id: "01KESZQ4GF6WSK5XBAA19N96MM"
+  code_id: "tv_power"
+```
+
+### Storage
+
+Learned codes are stored in `.storage/openirblaster_{entry_id}.json` and include:
 - Display name
-- Carrier frequency (Hz)
-- Pulse array (microseconds)
-- Tags (for organization)
-- Notes (for documentation)
-- Creation timestamp
+- Unique ID (slugified)
+- Carrier frequency (typically 38kHz)
+- Pulse timing array
+- Timestamp
 
 ## Troubleshooting
 
-### Integration Won't Add
+### "Learning session timed out"
 
-- Verify your ESPHome device is online and accessible
-- Check that the learning mode switch entity exists
-- Ensure the entity ID follows the format: `switch.{device}_ir_learning_mode`
+- **Solution**: Make sure you press the Learn button first, then press your remote within 30 seconds
+- Check that your IR receiver is working (view ESPHome logs)
+- Ensure your remote is pointed directly at the receiver
 
-### Learning Times Out
+### "Please enter a name for the IR code"
 
-- Increase the timeout parameter (default: 30 seconds)
-- Verify the IR receiver is working in ESPHome logs
-- Ensure the remote is pointed directly at the receiver
-- Check that learning mode is actually enabled
+- **Solution**: Enter a code name in the "Code Name" text field before pressing Learn
 
-### Codes Don't Transmit
+### Codes learned but don't transmit
 
-- Verify the ESPHome transmitter is configured correctly
-- Check Home Assistant logs for transmission errors
-- Ensure the carrier frequency matches your device
-- Test with the "Send Last Learned" button first
+- Check ESPHome logs when you press the send button
+- Verify the IR LED is wired correctly (check hardware documentation)
+- Try adjusting carrier frequency if needed (most remotes use 38kHz)
+- Test with "Send Last Learned" button first
+
+### Integration won't install
+
+- Verify your ESPHome device is online and connected
+- Check that the IR Learning Mode switch entity exists
+- Restart Home Assistant and try again
+
+## Example Use Cases
+
+### Universal Remote Dashboard
+
+Create a dashboard with all your IR device controls in one place.
+
+### Voice Control
+
+"Alexa, turn on the TV" → Triggers IR code via Home Assistant automation.
+
+### Scheduled Actions
+
+Automatically turn off your AC unit when you leave home or at a specific time.
+
+### Conditional Control
+
+Turn on your projector when movie time starts, turn it off when the movie ends.
 
 ## Development
 
-### Setting Up Development Environment
+Want to contribute? Check out:
+
+- [`CLAUDE.md`](CLAUDE.md) - Development guidelines and architecture
+- [`TESTING.md`](TESTING.md) - Testing instructions
+- [`hardware/`](hardware/) - Hardware design files and documentation
 
 ```bash
-# Clone the repository
+# Setup development environment
 git clone https://github.com/jaycollett/OpenIRBlaster.git
 cd OpenIRBlaster
-
-# Create virtual environment
 python3 -m venv venv
 source venv/bin/activate
-
-# Install dependencies
 pip install -r requirements_dev.txt
 
 # Run tests
 pytest
 ```
 
-### Running Tests
-
-```bash
-# Run all tests
-pytest
-
-# Run with coverage
-pytest --cov=custom_components/openirblaster
-
-# Run specific test file
-pytest tests/test_learning.py
-```
-
-### Code Quality
-
-```bash
-# Format code
-black custom_components/openirblaster
-
-# Lint code
-pylint custom_components/openirblaster
-
-# Type checking
-mypy custom_components/openirblaster
-```
-
-## Architecture
-
-The integration follows Home Assistant best practices:
-
-- **Config Flow**: User-friendly setup via UI
-- **Options Flow**: Save learned codes with metadata
-- **Platform Architecture**: Separate button and sensor platforms
-- **Storage Management**: JSON-based persistent storage with migration support
-- **State Machine**: Robust learning session management with timeout handling
-- **Event-Driven**: Listens for ESPHome events to capture learned codes
-- **Callback Management**: Proper registration and cleanup to prevent memory leaks
-
-Key components:
-
-- `__init__.py` - Integration setup and lifecycle management
-- `config_flow.py` - Configuration and options flows
-- `button.py` - Button entities for learning and transmission
-- `sensor.py` - Status sensors for monitoring
-- `learning.py` - Learning session state machine
-- `storage.py` - Persistent code storage with collision handling
-- `services.py` - Home Assistant service definitions
-
-See [CLAUDE.md](CLAUDE.md) for detailed development guidance and [openirblaster_ha_integration_spec.md](openirblaster_ha_integration_spec.md) for the technical specification.
-
 ## Contributing
 
 Contributions are welcome! Please:
 
 1. Fork the repository
-2. Create a feature branch
+2. Create a feature branch (`git checkout -b feature/amazing-feature`)
 3. Make your changes with tests
-4. Ensure all tests pass
+4. Ensure all tests pass (`pytest`)
 5. Submit a pull request
 
-Please follow the existing code style and include tests for new features.
+## Support
+
+- **Issues**: [Report bugs or request features](https://github.com/jaycollett/OpenIRBlaster/issues)
+- **Discussions**: [Ask questions or share ideas](https://github.com/jaycollett/OpenIRBlaster/discussions)
+- **Community**: [Home Assistant Forum](https://community.home-assistant.io/)
 
 ## License
 
@@ -305,19 +242,13 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## Acknowledgments
 
-- Built for the Home Assistant community
-- Integrates with ESPHome firmware
-- Inspired by various IR remote control integrations
-
-## Support
-
-- **Issues**: [GitHub Issues](https://github.com/jaycollett/OpenIRBlaster/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/jaycollett/OpenIRBlaster/discussions)
-- **Home Assistant Community**: [Community Forum](https://community.home-assistant.io/)
+Built with ❤️ for the Home Assistant community. Special thanks to:
+- The ESPHome project for the amazing firmware platform
+- The Home Assistant community for inspiration and support
 
 ---
 
-Made with ❤️ for Home Assistant
+**Tip**: After learning your codes, you can organize them with Tags and Notes (stored in the JSON file) for better management.
 
 [releases-shield]: https://img.shields.io/github/release/jaycollett/OpenIRBlaster.svg
 [releases]: https://github.com/jaycollett/OpenIRBlaster/releases
