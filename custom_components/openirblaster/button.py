@@ -56,8 +56,9 @@ async def async_setup_entry(
     # Send last learned button
     entities.append(SendLastButton(entry, learning_session))
 
-    # Button for each stored code
+    # Button for each stored code (send button + delete button)
     for code in storage.get_codes():
+        # Send button
         entities.append(
             CodeButton(
                 entry,
@@ -65,6 +66,14 @@ async def async_setup_entry(
                 code[ATTR_CODE_NAME],
                 code[ATTR_CARRIER_HZ],
                 code[ATTR_PULSES],
+            )
+        )
+        # Delete button
+        entities.append(
+            DeleteCodeButton(
+                entry,
+                code[ATTR_CODE_ID],
+                code[ATTR_CODE_NAME],
             )
         )
 
@@ -198,8 +207,10 @@ class LearnButton(OpenIRBlasterButtonBase):
 
             _LOGGER.info("Saved learned code as: %s", self._pending_save_name)
 
-            # Store the name in hass.data so sensors can display it
+            # Store all learned code data in hass.data so sensors can display it after reload
             self.hass.data[DOMAIN][self._entry.entry_id]["last_learned_name"] = self._pending_save_name
+            self.hass.data[DOMAIN][self._entry.entry_id]["last_learned_timestamp"] = pending_code.timestamp
+            self.hass.data[DOMAIN][self._entry.entry_id]["last_learned_pulse_count"] = len(pending_code.pulses)
 
             # Clear the text entity - find it using entity registry
             registry = er.async_get(self.hass)
@@ -297,16 +308,6 @@ class CodeButton(OpenIRBlasterButtonBase):
         self._attr_name = name
         self._attr_icon = "mdi:remote"
 
-    async def async_will_remove_from_hass(self) -> None:
-        """Clean up when entity is removed - delete code from storage."""
-        _LOGGER.info("Button entity for code %s is being removed, deleting from storage", self._code_id)
-        try:
-            storage: OpenIRBlasterStorage = self.hass.data[DOMAIN][self._entry.entry_id]["storage"]
-            await storage.async_delete_code(self._code_id)
-            _LOGGER.info("Successfully deleted code %s from storage", self._code_id)
-        except Exception as err:
-            _LOGGER.error("Failed to delete code %s from storage: %s", self._code_id, err)
-
     async def async_press(self) -> None:
         """Handle the button press."""
         # Normalize device name: ESPHome uses underscores in service names
@@ -326,3 +327,94 @@ class CodeButton(OpenIRBlasterButtonBase):
         except Exception as err:
             _LOGGER.error("Failed to send code %s: %s", self._code_id, err)
             # TODO: Create persistent notification for user
+
+
+class DeleteCodeButton(OpenIRBlasterButtonBase):
+    """Button to delete a specific stored IR code."""
+
+    def __init__(
+        self,
+        entry: ConfigEntry,
+        code_id: str,
+        name: str,
+    ) -> None:
+        """Initialize the delete button."""
+        super().__init__(entry)
+        self._code_id = code_id
+        self._attr_unique_id = f"{entry.entry_id}_{code_id}_delete"
+        self._attr_name = f"Delete {name}"
+        self._attr_icon = "mdi:delete"
+
+    async def async_press(self) -> None:
+        """Handle the button press - delete the code."""
+        _LOGGER.info("Delete button pressed for code %s", self._code_id)
+
+        # Get entity registry
+        registry = er.async_get(self.hass)
+
+        # Find both the send button and this delete button
+        send_button_unique_id = UNIQUE_ID_CODE_BUTTON.format(
+            entry_id=self._entry.entry_id, code_id=self._code_id
+        )
+        delete_button_unique_id = f"{self._entry.entry_id}_{self._code_id}_delete"
+
+        send_button_entity_id = registry.async_get_entity_id(
+            "button", DOMAIN, send_button_unique_id
+        )
+        delete_button_entity_id = registry.async_get_entity_id(
+            "button", DOMAIN, delete_button_unique_id
+        )
+
+        try:
+            # Get storage from hass.data
+            storage: OpenIRBlasterStorage = self.hass.data[DOMAIN][self._entry.entry_id]["storage"]
+
+            # Delete the code from storage
+            success = await storage.async_delete_code(self._code_id)
+
+            if success:
+                _LOGGER.info("Successfully deleted code %s from storage", self._code_id)
+
+                # Remove both button entities from entity registry
+                if send_button_entity_id:
+                    registry.async_remove(send_button_entity_id)
+                    _LOGGER.info("Removed send button entity %s", send_button_entity_id)
+
+                if delete_button_entity_id:
+                    registry.async_remove(delete_button_entity_id)
+                    _LOGGER.info("Removed delete button entity %s", delete_button_entity_id)
+
+                # Show success notification
+                await self.hass.services.async_call(
+                    "persistent_notification",
+                    "create",
+                    {
+                        "notification_id": f"openirblaster_deleted_{self._code_id}",
+                        "title": "OpenIRBlaster - Code Deleted",
+                        "message": f"IR code **{self._attr_name.replace('Delete ', '')}** has been deleted.",
+                    },
+                )
+            else:
+                _LOGGER.error("Failed to delete code %s - code not found in storage", self._code_id)
+                # Show error notification
+                await self.hass.services.async_call(
+                    "persistent_notification",
+                    "create",
+                    {
+                        "notification_id": f"openirblaster_delete_error_{self._code_id}",
+                        "title": "OpenIRBlaster - Delete Failed",
+                        "message": f"Failed to delete IR code **{self._attr_name.replace('Delete ', '')}**. Code not found in storage.",
+                    },
+                )
+        except Exception as err:
+            _LOGGER.error("Error deleting code %s: %s", self._code_id, err, exc_info=True)
+            # Show error notification
+            await self.hass.services.async_call(
+                "persistent_notification",
+                "create",
+                {
+                    "notification_id": f"openirblaster_delete_error_{self._code_id}",
+                    "title": "OpenIRBlaster - Delete Failed",
+                    "message": f"Error deleting IR code: {err}",
+                },
+            )

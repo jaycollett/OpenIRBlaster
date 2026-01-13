@@ -47,7 +47,7 @@ SEND_CODE_SCHEMA = vol.Schema(
 
 DELETE_CODE_SCHEMA = vol.Schema(
     {
-        vol.Required("config_entry_id"): cv.string,
+        vol.Optional("config_entry_id"): cv.string,
         vol.Required(ATTR_CODE_ID): cv.string,
     }
 )
@@ -137,8 +137,22 @@ async def async_setup_services(hass: HomeAssistant) -> None:
 
     async def handle_delete_code(call: ServiceCall) -> None:
         """Handle delete_code service call."""
-        entry_id = call.data["config_entry_id"]
         code_id = call.data[ATTR_CODE_ID]
+        entry_id = call.data.get("config_entry_id")
+
+        # If no config_entry_id provided, find it by searching for the code
+        if not entry_id:
+            _LOGGER.debug("No config_entry_id provided, searching for code %s", code_id)
+            for check_entry_id in hass.data.get(DOMAIN, {}):
+                storage: OpenIRBlasterStorage = hass.data[DOMAIN][check_entry_id]["storage"]
+                if storage.get_code(code_id):
+                    entry_id = check_entry_id
+                    _LOGGER.debug("Found code %s in entry %s", code_id, entry_id)
+                    break
+
+        if not entry_id:
+            _LOGGER.error("Could not find code %s in any OpenIRBlaster device", code_id)
+            return
 
         if entry_id not in hass.data[DOMAIN]:
             _LOGGER.error("Config entry %s not found", entry_id)

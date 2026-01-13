@@ -60,7 +60,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "storage": storage,
         "learning_session": learning_session,
         "config_entry": entry,
-        "last_learned_name": None,  # Track last learned code name for sensors
+        "last_learned_name": None,  # Track last learned code data for sensors
+        "last_learned_timestamp": None,
+        "last_learned_pulse_count": None,
     }
 
     # Set up platforms

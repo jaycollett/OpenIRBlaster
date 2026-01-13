@@ -61,20 +61,20 @@ send_code:
 
 delete_code:
   name: Delete Code
-  description: Delete a stored IR code
+  description: Delete a stored IR code and its button entity
   fields:
-    config_entry_id:
-      name: Config Entry ID
-      description: The configuration entry ID for the OpenIRBlaster device
-      required: true
-      example: "abc123def456"
-      selector:
-        text:
     id:
       name: Code ID
-      description: The ID of the code to delete
+      description: The ID of the code to delete (e.g., tv_power)
       required: true
       example: "tv_power"
+      selector:
+        text:
+    config_entry_id:
+      name: Config Entry ID
+      description: Optional - will auto-detect if not provided
+      required: false
+      example: "abc123def456"
       selector:
         text:
 
