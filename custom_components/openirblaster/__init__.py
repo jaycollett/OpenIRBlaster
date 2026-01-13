@@ -21,6 +21,9 @@ from .storage import OpenIRBlasterStorage
 
 _LOGGER = logging.getLogger(__name__)
 
+# Module-level cache for sensor data that survives reload cycles
+_SENSOR_DATA_CACHE: dict[str, dict[str, any]] = {}
+
 PLATFORMS = [Platform.BUTTON, Platform.SENSOR, Platform.TEXT]
 
 
@@ -56,13 +59,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # Store objects in hass.data
     hass.data.setdefault(DOMAIN, {})
+
+    # Restore sensor data from module cache (survives reload)
+    cached_sensor_data = _SENSOR_DATA_CACHE.get(entry.entry_id, {})
+
     hass.data[DOMAIN][entry.entry_id] = {
         "storage": storage,
         "learning_session": learning_session,
         "config_entry": entry,
-        "last_learned_name": None,  # Track last learned code data for sensors
-        "last_learned_timestamp": None,
-        "last_learned_pulse_count": None,
+        # Restore sensor data from cache
+        "last_learned_name": cached_sensor_data.get("last_learned_name"),
+        "last_learned_timestamp": cached_sensor_data.get("last_learned_timestamp"),
+        "last_learned_pulse_count": cached_sensor_data.get("last_learned_pulse_count"),
     }
 
     # Set up platforms
@@ -87,6 +95,14 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
     if unload_ok:
+        # Save sensor data to module cache before unloading (so it survives reload)
+        data = hass.data[DOMAIN].get(entry.entry_id, {})
+        _SENSOR_DATA_CACHE[entry.entry_id] = {
+            "last_learned_name": data.get("last_learned_name"),
+            "last_learned_timestamp": data.get("last_learned_timestamp"),
+            "last_learned_pulse_count": data.get("last_learned_pulse_count"),
+        }
+
         # Clean up learning session
         data = hass.data[DOMAIN].pop(entry.entry_id)
         learning_session: LearningSession = data["learning_session"]
