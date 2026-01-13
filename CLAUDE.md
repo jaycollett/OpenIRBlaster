@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Home Assistant custom integration that manages an IR code library (learn, store, name, send) for OpenIRBlaster ESPHome devices. The integration owns all code storage and management; the ESPHome firmware is "dumb" (learn + transmit only).
 
 **Target:** Python 3.12+, Home Assistant 2024.1+
-**Hardware:** ESP8266 ESPHome device with IR TX (GPIO14) and IR RX TSOP38238 (GPIO4)
+**Hardware:** ESP8266 ESPHome device with IR TX (GPIO14) and IR RX TSOP38238 (GPIO5)
 
 ## Architecture
 

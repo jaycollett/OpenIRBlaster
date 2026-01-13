@@ -123,11 +123,13 @@ text_sensor:
     id: last_ir_raw_snippet
     update_interval: never
 
-# IR Receiver (TSOP38238) on GPIO4
+# IR Receiver (TSOP38238) on GPIO5
+# NOTE: Hardware schematic shows GPIO4/GPIO5 are swapped in the ESP-12F footprint
+# The TSOP38238 OUT pin connects to GPIO5, not GPIO4
 remote_receiver:
   id: ir_rx
   pin:
-    number: GPIO4
+    number: GPIO5
     mode: INPUT_PULLUP
     inverted: true
 
@@ -157,7 +159,18 @@ remote_receiver:
                 event: esphome.openirblaster_learned
                 data:
                   device_id: !lambda |-
-                    return App.get_name();
+                    // Construct device_id with MAC suffix to match HA device name
+                    // HA names the device as "openirblaster-64c999" (base name + last 6 MAC chars)
+                    std::string mac = get_mac_address();
+                    std::string mac_suffix = "";
+                    for (size_t i = 0; i < mac.length(); i++) {
+                      if (mac[i] != ':') mac_suffix += tolower(mac[i]);
+                    }
+                    // Take last 6 characters
+                    if (mac_suffix.length() >= 6) {
+                      mac_suffix = mac_suffix.substr(mac_suffix.length() - 6);
+                    }
+                    return App.get_name() + std::string("-") + mac_suffix;
                   carrier_hz: !lambda |-
                     return (int) atoi("${default_carrier_hz}");
                   pulses_json: !lambda |-
@@ -195,10 +208,21 @@ remote_receiver:
                 int rssi = 0;
                 if (!isnan(id(wifi_rssi).state)) rssi = (int) id(wifi_rssi).state;
 
+                // Construct device_id with MAC suffix to match HA device name
+                std::string mac = get_mac_address();
+                std::string mac_suffix = "";
+                for (size_t i = 0; i < mac.length(); i++) {
+                  if (mac[i] != ':') mac_suffix += tolower(mac[i]);
+                }
+                if (mac_suffix.length() >= 6) {
+                  mac_suffix = mac_suffix.substr(mac_suffix.length() - 6);
+                }
+                std::string device_id = App.get_name() + std::string("-") + mac_suffix;
+
                 std::string out;
                 out.reserve(2000);
                 out += "{";
-                out += "\"device_id\":\"" + App.get_name() + "\",";
+                out += "\"device_id\":\"" + device_id + "\",";
                 out += "\"carrier_hz\":" + to_string((int) atoi("${default_carrier_hz}")) + ",";
                 out += "\"rssi\":" + to_string(rssi) + ",";
                 out += "\"timestamp\":\"" + ts + "\",";
