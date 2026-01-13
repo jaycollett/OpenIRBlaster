@@ -30,10 +30,19 @@ api:
         carrier_hz: int
         code: int[]
       then:
+        - logger.log:
+            format: "Received send_ir_raw service call: carrier_hz=%d, code_length=%d"
+            level: INFO
+            args:
+              - "carrier_hz"
+              - "code.size()"
         - remote_transmitter.transmit_raw:
             transmitter_id: ir_tx
             carrier_frequency: !lambda "return (float)carrier_hz;"
             code: !lambda "return code;"
+        - logger.log:
+            format: "IR transmission complete"
+            level: INFO
 
 ota:
   - platform: esphome
@@ -81,8 +90,14 @@ switch:
     restore_mode: ALWAYS_OFF
     optimistic: true
     turn_on_action:
+      - logger.log:
+          format: "IR Learning Mode ENABLED"
+          level: INFO
       - lambda: "id(learn_enabled) = true;"
     turn_off_action:
+      - logger.log:
+          format: "IR Learning Mode DISABLED"
+          level: INFO
       - lambda: "id(learn_enabled) = false;"
 
 button:
@@ -132,6 +147,11 @@ remote_receiver:
           condition:
             lambda: "return id(learn_enabled);"
           then:
+            - logger.log:
+                format: "IR code received during learning mode (pulse count: %d)"
+                level: INFO
+                args:
+                  - "x.size()"
             # Preferred learned notification mechanism: fire an HA event
             - homeassistant.event:
                 event: esphome.openirblaster_learned
