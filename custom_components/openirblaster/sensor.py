@@ -132,9 +132,18 @@ class LastLearnedTimestampSensor(OpenIRBlasterSensorBase):
     @property
     def native_value(self) -> datetime | None:
         """Return the state of the sensor."""
+        # Read the last learned timestamp from hass.data (persists across reloads)
+        if self.hass and self._entry.entry_id in self.hass.data.get(DOMAIN, {}):
+            timestamp = self.hass.data[DOMAIN][self._entry.entry_id].get("last_learned_timestamp")
+            if timestamp:
+                try:
+                    # Parse ISO timestamp
+                    return datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+                except ValueError:
+                    _LOGGER.warning("Could not parse timestamp: %s", timestamp)
+        # Fallback to in-memory code
         if self._last_learned_code and self._last_learned_code.timestamp:
             try:
-                # Parse ISO timestamp
                 return datetime.fromisoformat(self._last_learned_code.timestamp.replace("Z", "+00:00"))
             except ValueError:
                 _LOGGER.warning("Could not parse timestamp: %s", self._last_learned_code.timestamp)
@@ -161,6 +170,12 @@ class LastLearnedLengthSensor(OpenIRBlasterSensorBase):
     @property
     def native_value(self) -> int | None:
         """Return the state of the sensor."""
+        # Read the last learned pulse count from hass.data (persists across reloads)
+        if self.hass and self._entry.entry_id in self.hass.data.get(DOMAIN, {}):
+            pulse_count = self.hass.data[DOMAIN][self._entry.entry_id].get("last_learned_pulse_count")
+            if pulse_count is not None:
+                return pulse_count
+        # Fallback to in-memory code
         if self._last_learned_code:
             return len(self._last_learned_code.pulses)
         return None
