@@ -30,7 +30,7 @@ sudo systemctl restart home-assistant@homeassistant
 
 You'll need to provide:
 - **ESPHome Device Name**: The name of your ESP device (e.g., `openirblaster-64c999`)
-  - Check ESPHome dashboard or your `example_firmware.yaml` for the name
+  - Check ESPHome dashboard or your `hardware_config/factory_config.yaml` for the name
 - **Device ID** (optional): Defaults to device name if not provided
 - **Learning Switch Entity ID** (optional): Auto-generated as `switch.{device}_ir_learning_mode`
 

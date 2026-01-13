@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
 from homeassistant.components.button import ButtonEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
@@ -20,13 +22,16 @@ from .const import (
     CONF_ESPHOME_DEVICE_NAME,
     DOMAIN,
     STATE_ARMED,
+    STATE_CANCELLED,
     STATE_IDLE,
     STATE_RECEIVED,
+    STATE_TIMEOUT,
     UNIQUE_ID_CODE_BUTTON,
+    UNIQUE_ID_CODE_NAME_INPUT,
     UNIQUE_ID_LEARN_BUTTON,
     UNIQUE_ID_SEND_LAST_BUTTON,
 )
-from .learning import LearningSession
+from .learning import LearnedCode, LearningSession
 from .storage import OpenIRBlasterStorage
 
 _LOGGER = logging.getLogger(__name__)
@@ -74,15 +79,21 @@ class OpenIRBlasterButtonBase(ButtonEntity):
     def __init__(self, entry: ConfigEntry) -> None:
         """Initialize the button."""
         self._entry = entry
+        device_id = entry.data[CONF_DEVICE_ID]
+        # Device already created in __init__.py, just reference it
         self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, entry.data[CONF_DEVICE_ID])},
+            identifiers={(DOMAIN, device_id)},
         )
 
 
 class LearnButton(OpenIRBlasterButtonBase):
     """Button to start learning a new IR code."""
 
-    def __init__(self, entry: ConfigEntry, learning_session: LearningSession) -> None:
+    def __init__(
+        self,
+        entry: ConfigEntry,
+        learning_session: LearningSession,
+    ) -> None:
         """Initialize the learn button."""
         super().__init__(entry)
         self._learning_session = learning_session
@@ -90,26 +101,145 @@ class LearnButton(OpenIRBlasterButtonBase):
         self._attr_name = "Learn IR Code"
         self._attr_icon = "mdi:remote-tv"
 
+        # Store entry for later entity ID lookup
+        self._text_entity_unique_id = UNIQUE_ID_CODE_NAME_INPUT.format(entry_id=entry.entry_id)
+        self._pending_save_name: str | None = None
+
     async def async_press(self) -> None:
         """Handle the button press."""
+        # Reset any previous session (except if currently armed/listening)
         if self._learning_session.state != STATE_IDLE:
-            _LOGGER.warning(
-                "Cannot start learning: session in state %s",
-                self._learning_session.state,
-            )
+            if self._learning_session.state == STATE_ARMED:
+                _LOGGER.info("Learning session already active, ignoring button press")
+                return
+            else:
+                _LOGGER.info("Resetting learning session from state %s to idle", self._learning_session.state)
+                await self._learning_session.async_clear_pending()
+
+        # Find text entity using entity registry
+        registry = er.async_get(self.hass)
+        text_entity_entry = registry.async_get_entity_id(
+            "text",
+            DOMAIN,
+            self._text_entity_unique_id
+        )
+
+        if not text_entity_entry:
+            _LOGGER.error("Cannot find Code Name text entity in registry")
             return
 
+        text_entity_id = text_entity_entry
+
+        # Read the text entity value
+        text_state = self.hass.states.get(text_entity_id)
+        if (not text_state or not text_state.state or
+            text_state.state.strip() == "" or
+            text_state.state == "unavailable" or
+            text_state.state.strip() == "Enter Code Name"):
+            # Show error notification
+            await self.hass.services.async_call(
+                "persistent_notification",
+                "create",
+                {
+                    "notification_id": f"openirblaster_no_name_{self._entry.entry_id}",
+                    "title": "OpenIRBlaster - Name Required",
+                    "message": (
+                        "Please enter a name for the IR code in the **Code Name** "
+                        "field before pressing the Learn button."
+                    ),
+                },
+            )
+            _LOGGER.warning("Cannot start learning: no code name provided")
+            return
+
+        # Store the code name for the callback
+        self._pending_save_name = text_state.state.strip()
+
+        # Register callback to handle learning completion
+        self._learning_session.register_callback(self._handle_learning_complete)
+
+        # Start learning
         success = await self._learning_session.async_start_learning()
         if success:
-            _LOGGER.info("Learning session started")
+            _LOGGER.info("Learning session started for code: %s", self._pending_save_name)
         else:
             _LOGGER.error("Failed to start learning session")
+            # Unregister callback if start failed
+            self._learning_session.unregister_callback(self._handle_learning_complete)
+            self._pending_save_name = None
+
+    def _handle_learning_complete(self, state: str, code: LearnedCode | None) -> None:
+        """Handle learning session state changes."""
+        if state == STATE_RECEIVED and code and self._pending_save_name:
+            # Schedule the save operation
+            asyncio.create_task(self._async_save_learned_code())
+
+    async def _async_save_learned_code(self) -> None:
+        """Save the learned code with the pending name."""
+        if not self._pending_save_name:
+            return
+
+        try:
+            # Get storage from hass.data
+            storage: OpenIRBlasterStorage = self.hass.data[DOMAIN][self._entry.entry_id]["storage"]
+
+            # Get the pending code
+            pending_code = self._learning_session.pending_code
+            if not pending_code:
+                _LOGGER.error("No pending code to save")
+                return
+
+            # Save the code
+            await storage.async_add_code(
+                name=self._pending_save_name,
+                carrier_hz=pending_code.carrier_hz,
+                pulses=pending_code.pulses,
+            )
+
+            _LOGGER.info("Saved learned code as: %s", self._pending_save_name)
+
+            # Store the name in hass.data so sensors can display it
+            self.hass.data[DOMAIN][self._entry.entry_id]["last_learned_name"] = self._pending_save_name
+
+            # Clear the text entity - find it using entity registry
+            registry = er.async_get(self.hass)
+            text_entity_id = registry.async_get_entity_id(
+                "text",
+                DOMAIN,
+                self._text_entity_unique_id
+            )
+            if text_entity_id:
+                await self.hass.services.async_call(
+                    "text",
+                    "set_value",
+                    {
+                        "entity_id": text_entity_id,
+                        "value": "Enter Code Name",
+                    },
+                )
+
+            # Clear the pending code in learning session
+            await self._learning_session.async_clear_pending()
+
+            # Reload config entry to create new button entity
+            await self.hass.config_entries.async_reload(self._entry.entry_id)
+
+        except Exception as err:
+            _LOGGER.error("Failed to save learned code: %s", err, exc_info=True)
+        finally:
+            # Cleanup: unregister callback and clear pending name
+            self._learning_session.unregister_callback(self._handle_learning_complete)
+            self._pending_save_name = None
 
 
 class SendLastButton(OpenIRBlasterButtonBase):
     """Button to send the last learned code (for debugging)."""
 
-    def __init__(self, entry: ConfigEntry, learning_session: LearningSession) -> None:
+    def __init__(
+        self,
+        entry: ConfigEntry,
+        learning_session: LearningSession,
+    ) -> None:
         """Initialize the send last button."""
         super().__init__(entry)
         self._learning_session = learning_session
@@ -166,6 +296,16 @@ class CodeButton(OpenIRBlasterButtonBase):
         )
         self._attr_name = name
         self._attr_icon = "mdi:remote"
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Clean up when entity is removed - delete code from storage."""
+        _LOGGER.info("Button entity for code %s is being removed, deleting from storage", self._code_id)
+        try:
+            storage: OpenIRBlasterStorage = self.hass.data[DOMAIN][self._entry.entry_id]["storage"]
+            await storage.async_delete_code(self._code_id)
+            _LOGGER.info("Successfully deleted code %s from storage", self._code_id)
+        except Exception as err:
+            _LOGGER.error("Failed to delete code %s from storage: %s", self._code_id, err)
 
     async def async_press(self) -> None:
         """Handle the button press."""

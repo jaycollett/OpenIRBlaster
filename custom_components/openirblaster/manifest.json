@@ -3,11 +3,11 @@
   "name": "OpenIRBlaster",
   "codeowners": ["@jaycollett"],
   "config_flow": true,
-  "dependencies": [],
-  "documentation": "https://github.com/jaycollett/OpenIRBlasterIntegration",
+  "dependencies": ["esphome"],
+  "documentation": "https://github.com/jaycollett/OpenIRBlaster",
   "integration_type": "device",
   "iot_class": "local_push",
-  "issue_tracker": "https://github.com/jaycollett/OpenIRBlasterIntegration/issues",
+  "issue_tracker": "https://github.com/jaycollett/OpenIRBlaster/issues",
   "requirements": [],
   "version": "1.0.0"
 }

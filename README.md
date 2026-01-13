@@ -25,7 +25,7 @@ OpenIRBlaster is a Home Assistant custom integration that provides a complete so
 
 - Home Assistant 2024.1 or newer (Python 3.12+)
 - ESPHome device with IR receiver and transmitter
-- OpenIRBlaster ESPHome firmware (see `example_firmware.yaml`)
+- OpenIRBlaster ESPHome firmware (see `hardware_config/factory_config.yaml`)
 
 ## Installation
 
@@ -60,7 +60,7 @@ Your ESPHome device must have the OpenIRBlaster firmware installed. The integrat
 - A learning mode switch entity
 - Event publishing when codes are learned
 
-See `example_firmware.yaml` for a complete ESPHome configuration example.
+See `hardware_config/factory_config.yaml` for a complete ESPHome configuration example.
 
 ## Usage
 
@@ -223,8 +223,8 @@ Learned codes are stored in `.storage/openirblaster_{entry_id}.json` within your
 
 ```bash
 # Clone the repository
-git clone https://github.com/jaycollett/OpenIRBlasterIntegration.git
-cd OpenIRBlasterIntegration
+git clone https://github.com/jaycollett/OpenIRBlaster.git
+cd OpenIRBlaster
 
 # Create virtual environment
 python3 -m venv venv
@@ -311,16 +311,16 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## Support
 
-- **Issues**: [GitHub Issues](https://github.com/jaycollett/OpenIRBlasterIntegration/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/jaycollett/OpenIRBlasterIntegration/discussions)
+- **Issues**: [GitHub Issues](https://github.com/jaycollett/OpenIRBlaster/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/jaycollett/OpenIRBlaster/discussions)
 - **Home Assistant Community**: [Community Forum](https://community.home-assistant.io/)
 
 ---
 
 Made with ❤️ for Home Assistant
 
-[releases-shield]: https://img.shields.io/github/release/jaycollett/OpenIRBlasterIntegration.svg
-[releases]: https://github.com/jaycollett/OpenIRBlasterIntegration/releases
-[license-shield]: https://img.shields.io/github/license/jaycollett/OpenIRBlasterIntegration.svg
+[releases-shield]: https://img.shields.io/github/release/jaycollett/OpenIRBlaster.svg
+[releases]: https://github.com/jaycollett/OpenIRBlaster/releases
+[license-shield]: https://img.shields.io/github/license/jaycollett/OpenIRBlaster.svg
 [hacs]: https://github.com/hacs/integration
 [hacsbadge]: https://img.shields.io/badge/HACS-Default-orange.svg
