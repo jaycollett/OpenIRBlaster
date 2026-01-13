@@ -7,7 +7,7 @@ substitutions:
 esphome:
   name: ${name}
   friendly_name: ${friendly_name}
-  name_add_mac_suffix: true
+  name_add_mac_suffix: false
   project:
     name: "jaycollett.openirblaster"
     version: "0.1.2"
