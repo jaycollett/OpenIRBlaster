@@ -132,7 +132,7 @@ remote_receiver:
           condition:
             lambda: "return id(learn_enabled);"
           then:
-            # Preferred learned notification mechanism: fire an HA event
+            # preferred learned notification mechanism: fire an HA event
             - homeassistant.event:
                 event: esphome.openirblaster_learned
                 data:
@@ -164,7 +164,7 @@ remote_receiver:
 
 
 
-            # Optional debug sensor payload (compact JSON-like string, bounded)
+            # optional debug sensor payload (compact JSON-like string, bounded)
             - lambda: |-
                 const size_t MAX_PULSES = 600;
                 size_t n = x.size();
@@ -194,7 +194,7 @@ remote_receiver:
                 out += "}";
                 id(last_ir_raw_snippet).publish_state(out);
 
-            # Disable learning mode after first successful capture to prevent multiple events
+            # disable learning mode after first successful capture
             - switch.turn_off: ir_learning_mode
 
 # IR Transmitter on GPIO14 (driving the IRLML6344 gate)
