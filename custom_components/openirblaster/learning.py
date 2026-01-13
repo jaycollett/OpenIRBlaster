@@ -174,6 +174,15 @@ class LearningSession:
             # Fallback to direct array (for testing or future firmware versions)
             pulses = data.get(ATTR_PULSES, [])
 
+        # Convert carrier_hz to int if it's a string (ESPHome may send as string)
+        if isinstance(carrier_hz, str):
+            try:
+                carrier_hz = int(carrier_hz)
+            except (ValueError, TypeError):
+                _LOGGER.error("Cannot convert carrier_hz to int: %s", carrier_hz)
+                asyncio.create_task(self._async_cancel("Invalid carrier frequency"))
+                return
+
         if not isinstance(carrier_hz, int) or carrier_hz <= 0:
             _LOGGER.error("Invalid carrier_hz in learned event: %s", carrier_hz)
             asyncio.create_task(self._async_cancel("Invalid carrier frequency"))
