@@ -13,7 +13,7 @@ esphome:
     version: "0.1.2"
 
 dashboard_import:
-  package_import_url: github://jaycollett/OpenIRBlaster/Firmware/ir_blaster.yaml@main
+  package_import_url: github://jaycollett/OpenIRBlasterIntegration/hardware_config/factory_config.yaml@master
   import_full_config: true
 
 esp8266:
@@ -119,7 +119,7 @@ remote_receiver:
   dump: raw
 
   # Stable value from prior testing
-  buffer_size: 7kb
+  buffer_size: 6kb
 
   tolerance: 50%
   filter: 50us
