@@ -3,21 +3,21 @@
     "step": {
       "user": {
         "title": "Set up OpenIRBlaster",
-        "description": "Configure your OpenIRBlaster device",
+        "description": "Select your OpenIRBlaster device from the list below.",
         "data": {
-          "esphome_device_name": "ESPHome Device Name",
-          "device_id": "Device ID (optional, defaults to device name)",
-          "learning_switch_entity_id": "Learning Mode Switch Entity ID (optional)"
+          "device": "OpenIRBlaster Device"
         }
       }
     },
     "error": {
-      "entity_not_found": "The specified learning mode switch entity was not found. Please check the entity ID.",
+      "entity_not_found": "The learning mode switch entity was not found. Please ensure your ESPHome device is online and the firmware includes the 'IR Learning Mode' switch.",
+      "device_not_found": "The selected device could not be found in the device registry.",
       "cannot_connect": "Failed to connect to the device",
       "unknown": "Unexpected error occurred"
     },
     "abort": {
-      "already_configured": "This device is already configured"
+      "already_configured": "This device is already configured",
+      "no_devices_found": "No OpenIRBlaster devices found. Please ensure:\n1. Your ESPHome device is online and connected\n2. The device uses firmware version 0.1.2 or later\n3. The firmware includes project name 'jaycollett.openirblaster'"
     }
   },
   "options": {
@@ -48,6 +48,13 @@
     "abort": {
       "not_loaded": "Integration not loaded",
       "not_implemented": "This feature is not yet implemented"
+    }
+  },
+  "entity": {
+    "text": {
+      "code_name_input": {
+        "name": "Code Name"
+      }
     }
   },
   "services": {

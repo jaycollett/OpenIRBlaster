@@ -12,7 +12,7 @@ DEFAULT_LEARNING_SWITCH_PATTERN = "switch.{device}_ir_learning_mode"
 DEFAULT_SERVICE_NAME_PATTERN = "esphome.{device}_send_ir_raw"
 
 # Event types
-# Note: ESPHome fires this event name (see example_firmware.yaml line 136)
+# Note: ESPHome fires this event name (see hardware_config/factory_config.yaml line 136)
 EVENT_LEARNED = "esphome.openirblaster_learned"
 
 # Learning session
@@ -36,6 +36,7 @@ SERVICE_LEARN_START = "learn_start"
 SERVICE_SEND_CODE = "send_code"
 SERVICE_DELETE_CODE = "delete_code"
 SERVICE_RENAME_CODE = "rename_code"
+SERVICE_SAVE_PENDING = "save_pending"
 
 # Attributes for learned event payload
 ATTR_DEVICE_ID = "device_id"
@@ -57,6 +58,7 @@ ATTR_NOTES = "notes"
 UNIQUE_ID_LEARN_BUTTON = "{entry_id}_learn"
 UNIQUE_ID_SEND_LAST_BUTTON = "{entry_id}_send_last"
 UNIQUE_ID_CODE_BUTTON = "{entry_id}_{code_id}"
+UNIQUE_ID_CODE_NAME_INPUT = "{entry_id}_code_name_input"
 UNIQUE_ID_LAST_LEARNED_NAME = "{entry_id}_last_learned_name"
 UNIQUE_ID_LAST_LEARNED_AT = "{entry_id}_last_learned_at"
 UNIQUE_ID_LAST_LEARNED_LEN = "{entry_id}_last_learned_len"

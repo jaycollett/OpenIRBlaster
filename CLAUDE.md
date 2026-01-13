@@ -12,13 +12,13 @@ Home Assistant custom integration that manages an IR code library (learn, store,
 ## Architecture
 
 ### Component responsibilities
-- **ESPHome firmware**: Receives IR frames, fires `openirblaster.learned` events to HA, provides `send_ir_raw` service
+- **ESPHome firmware**: Receives IR frames, fires `esphome.openirblaster_learned` events to HA, provides `send_ir_raw` service
 - **HA integration** (`custom_components/openirblaster/`): Config flow, event listener, storage manager, entity provider (buttons per code)
 - **Storage**: `.storage/openirblaster_<entry_id>.json` - persistent code library (schema in spec section 5.2)
 
 ### Data flow
 1. User presses "Learn" button → integration enables learning mode switch on ESPHome device
-2. Device receives IR → fires `openirblaster.learned` event with `{device_id, carrier_hz, pulses, timestamp}`
+2. Device receives IR → fires `esphome.openirblaster_learned` event with `{device_id, carrier_hz, pulses_json, timestamp, rssi}`
 3. Integration captures event → prompts user for code name via options flow
 4. User saves → integration writes to `.storage/` and creates/updates Button entity
 5. User presses code button → integration calls ESPHome `send_ir_raw` service with stored payload
@@ -31,7 +31,7 @@ Timeout: 30 seconds default
 Integration expects these from the firmware:
 - **Switch**: `switch.<device>_ir_learning_mode`
 - **Service**: `esphome.<device>_send_ir_raw(carrier_hz: int, code: int[])`
-- **Event**: `openirblaster.learned` with payload containing `device_id`, `carrier_hz`, `pulses` (int array), `timestamp`
+- **Event**: `esphome.openirblaster_learned` with payload containing `device_id`, `carrier_hz`, `pulses_json` (JSON string of int array), `timestamp`, `rssi` (optional)
 
 ## Development commands
 
@@ -102,9 +102,9 @@ Each config entry must store:
 - `esphome_device_name`: used to construct service name `esphome.<name>_send_ir_raw`
 
 ### Event handling
-- Subscribe to HA event bus for `openirblaster.learned`
+- Subscribe to HA event bus for `esphome.openirblaster_learned`
 - Filter by `event.data.device_id` matching config entry
-- Validate payload: `pulses` array bounded to ~2000 elements max
+- Parse `pulses_json` string into int array, validate bounded to 2000 elements max
 - Store as pending in memory, prompt user via options flow
 
 ### Error handling patterns
@@ -150,7 +150,7 @@ Since immediate dialog prompts require frontend components (phase 2), phase 1 us
 - Entity creation: verify buttons created/removed on code save/delete
 
 ### Integration tests
-- Simulate `openirblaster.learned` event on bus → verify entity appears
+- Simulate `esphome.openirblaster_learned` event on bus → verify entity appears
 - Config flow: mock ESPHome device discovery
 - End-to-end: learn → save → send cycle (mocked ESPHome service)
 

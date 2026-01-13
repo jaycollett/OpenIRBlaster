@@ -11,7 +11,7 @@ from homeassistant import config_entries
 from homeassistant.const import CONF_NAME
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.data_entry_flow import FlowResult
-from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import device_registry as dr, entity_registry as er, selector
 
 from .const import (
     CONF_DEVICE_ID,
@@ -31,6 +31,49 @@ class OpenIRBlasterConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     VERSION = 1
 
+    async def _get_available_openirblaster_devices(self) -> list[dict[str, str]]:
+        """Get list of available OpenIRBlaster devices not yet configured.
+
+        Returns list of dicts with keys: 'label' (display name), 'value' (device_id)
+        """
+        device_registry = dr.async_get(self.hass)
+
+        # Get existing configured device IDs
+        existing_device_ids = {
+            entry.unique_id for entry in self._async_current_entries()
+        }
+
+        available_devices = []
+        for device in device_registry.devices.values():
+            # Filter by manufacturer/model from ESPHome project name
+            if device.manufacturer != "jaycollett" or device.model != "openirblaster":
+                continue
+
+            # Extract device_id from ESPHome identifiers: ("esphome", "openirblaster-abc123")
+            device_id = None
+            for identifier in device.identifiers:
+                if identifier[0] == "esphome":
+                    device_id = identifier[1]
+                    break
+
+            # Fallback: If no identifier found, try to get device_name from ESPHome config entry
+            if not device_id and device.config_entries:
+                for config_entry_id in device.config_entries:
+                    config_entry = self.hass.config_entries.async_get_entry(config_entry_id)
+                    if config_entry and config_entry.domain == "esphome":
+                        device_id = config_entry.data.get("device_name")
+                        break
+
+            if not device_id or device_id in existing_device_ids:
+                continue
+
+            available_devices.append({
+                "label": device.name_by_user or device.name,
+                "value": device_id,
+            })
+
+        return available_devices
+
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
@@ -38,53 +81,90 @@ class OpenIRBlasterConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors = {}
 
         if user_input is not None:
-            device_name = user_input[CONF_ESPHOME_DEVICE_NAME]
-            device_id = user_input.get(CONF_DEVICE_ID, device_name)
+            device_id = user_input["device"]
 
-            # Generate learning switch entity ID if not provided
-            # Normalize device name: replace hyphens with underscores for entity IDs
-            normalized_device_name = device_name.replace("-", "_")
-            learning_switch_entity_id = user_input.get(
-                CONF_LEARNING_SWITCH_ENTITY_ID,
-                DEFAULT_LEARNING_SWITCH_PATTERN.format(device=normalized_device_name),
-            )
+            # Find device in registry
+            device_registry = dr.async_get(self.hass)
+            selected_device = None
 
-            # Validate that the learning switch exists
-            entity_registry = er.async_get(self.hass)
-            if not entity_registry.async_get(learning_switch_entity_id):
-                # Check if it exists in state registry
-                state = self.hass.states.get(learning_switch_entity_id)
-                if state is None:
-                    errors["base"] = "entity_not_found"
-                    _LOGGER.warning(
-                        "Learning switch entity not found: %s", learning_switch_entity_id
-                    )
+            # Try to find by ESPHome identifier first
+            for device in device_registry.devices.values():
+                for identifier in device.identifiers:
+                    if identifier[0] == "esphome" and identifier[1] == device_id:
+                        selected_device = device
+                        break
+                if selected_device:
+                    break
 
-            if not errors:
-                # Create unique ID from device_id
-                await self.async_set_unique_id(device_id)
-                self._abort_if_unique_id_configured()
+            # Fallback: find by ESPHome config entry device_name
+            if not selected_device:
+                for device in device_registry.devices.values():
+                    if device.manufacturer == "jaycollett" and device.model == "openirblaster":
+                        for config_entry_id in device.config_entries:
+                            config_entry = self.hass.config_entries.async_get_entry(config_entry_id)
+                            if config_entry and config_entry.domain == "esphome":
+                                if config_entry.data.get("device_name") == device_id:
+                                    selected_device = device
+                                    break
+                    if selected_device:
+                        break
 
-                return self.async_create_entry(
-                    title=f"OpenIRBlaster {device_name}",
-                    data={
-                        CONF_ESPHOME_DEVICE_NAME: device_name,
-                        CONF_DEVICE_ID: device_id,
-                        CONF_LEARNING_SWITCH_ENTITY_ID: learning_switch_entity_id,
-                    },
+            if not selected_device:
+                errors["base"] = "device_not_found"
+            else:
+                # Use device_id as esphome_device_name
+                device_name = device_id
+
+                # Generate learning switch entity ID
+                normalized_device_name = device_name.replace("-", "_")
+                learning_switch_entity_id = DEFAULT_LEARNING_SWITCH_PATTERN.format(
+                    device=normalized_device_name
                 )
 
-        # Show form
-        data_schema = vol.Schema(
-            {
-                vol.Required(CONF_ESPHOME_DEVICE_NAME): str,
-                vol.Optional(CONF_DEVICE_ID): str,
-                vol.Optional(CONF_LEARNING_SWITCH_ENTITY_ID): str,
-            }
-        )
+                # Validate learning switch exists
+                entity_registry = er.async_get(self.hass)
+                if not entity_registry.async_get(learning_switch_entity_id):
+                    state = self.hass.states.get(learning_switch_entity_id)
+                    if state is None:
+                        errors["base"] = "entity_not_found"
+                        _LOGGER.warning(
+                            "Learning switch entity not found: %s",
+                            learning_switch_entity_id,
+                        )
+
+                if not errors:
+                    await self.async_set_unique_id(device_id)
+                    self._abort_if_unique_id_configured()
+
+                    return self.async_create_entry(
+                        title=f"OpenIRBlaster {device_name}",
+                        data={
+                            CONF_ESPHOME_DEVICE_NAME: device_name,
+                            CONF_DEVICE_ID: device_id,
+                            CONF_LEARNING_SWITCH_ENTITY_ID: learning_switch_entity_id,
+                        },
+                    )
+
+        # Get available devices
+        available_devices = await self._get_available_openirblaster_devices()
+
+        if not available_devices:
+            return self.async_abort(reason="no_devices_found")
+
+        # Build schema with SelectSelector
+        data_schema = vol.Schema({
+            vol.Required("device"): selector.SelectSelector(
+                selector.SelectSelectorConfig(
+                    options=available_devices,
+                    mode=selector.SelectSelectorMode.DROPDOWN,
+                )
+            )
+        })
 
         return self.async_show_form(
-            step_id="user", data_schema=data_schema, errors=errors
+            step_id="user",
+            data_schema=data_schema,
+            errors=errors
         )
 
     @staticmethod

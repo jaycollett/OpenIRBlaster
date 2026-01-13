@@ -236,6 +236,31 @@ class LearningSession:
         self._state = STATE_RECEIVED
         self._notify_state_change()
 
+        # Create persistent notification to prompt user to save the code
+        if self._pending_code:
+            notification_message = (
+                f"**New IR code learned!**\n\n"
+                f"- Carrier: {self._pending_code.carrier_hz} Hz\n"
+                f"- Pulses: {len(self._pending_code.pulses)}\n"
+                f"- Timestamp: {self._pending_code.timestamp}\n\n"
+                f"**To save this code:**\n"
+                f"1. Go to Settings → Devices & Services\n"
+                f"2. Find OpenIRBlaster integration\n"
+                f"3. Click the device name\n"
+                f"4. The pending code will be shown\n\n"
+                f"Or use the **Send Last Learned** button to test it first!"
+            )
+
+            await self.hass.services.async_call(
+                "persistent_notification",
+                "create",
+                {
+                    "notification_id": f"openirblaster_learned_{self.config_entry_id}",
+                    "title": "OpenIRBlaster - Code Learned",
+                    "message": notification_message,
+                },
+            )
+
     async def _async_handle_timeout(self) -> None:
         """Handle learning timeout."""
         if self._state != STATE_ARMED:
@@ -290,11 +315,24 @@ class LearningSession:
         self._state = STATE_CANCELLED
         self._notify_state_change()
 
-    def clear_pending(self) -> None:
+    async def async_clear_pending(self) -> None:
         """Clear pending code and reset to idle."""
+        # Dismiss the notification
+        await self.hass.services.async_call(
+            "persistent_notification",
+            "dismiss",
+            {
+                "notification_id": f"openirblaster_learned_{self.config_entry_id}",
+            },
+        )
+
         self._pending_code = None
         self._state = STATE_IDLE
         self._notify_state_change()
+
+    def clear_pending(self) -> None:
+        """Clear pending code and reset to idle (sync wrapper)."""
+        asyncio.create_task(self.async_clear_pending())
 
     async def async_cleanup(self) -> None:
         """Clean up resources."""

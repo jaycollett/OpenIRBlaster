@@ -20,6 +20,7 @@ from .const import (
     SERVICE_DELETE_CODE,
     SERVICE_LEARN_START,
     SERVICE_RENAME_CODE,
+    SERVICE_SAVE_PENDING,
     SERVICE_SEND_CODE,
 )
 from .learning import LearningSession
@@ -56,6 +57,15 @@ RENAME_CODE_SCHEMA = vol.Schema(
         vol.Required("config_entry_id"): cv.string,
         vol.Required(ATTR_CODE_ID): cv.string,
         vol.Required("new_name"): cv.string,
+    }
+)
+
+SAVE_PENDING_SCHEMA = vol.Schema(
+    {
+        vol.Required("config_entry_id"): cv.string,
+        vol.Required("name"): cv.string,
+        vol.Optional("tags"): cv.string,  # Comma-separated tags
+        vol.Optional("notes"): cv.string,
     }
 )
 
@@ -164,6 +174,46 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         else:
             _LOGGER.error("Failed to rename code %s", code_id)
 
+    async def handle_save_pending(call: ServiceCall) -> None:
+        """Handle save_pending service call - saves the pending learned code."""
+        entry_id = call.data["config_entry_id"]
+        name = call.data["name"]
+        tags_str = call.data.get("tags", "")
+        notes = call.data.get("notes", "")
+
+        if entry_id not in hass.data[DOMAIN]:
+            _LOGGER.error("Config entry %s not found", entry_id)
+            return
+
+        learning_session: LearningSession = hass.data[DOMAIN][entry_id]["learning_session"]
+        storage: OpenIRBlasterStorage = hass.data[DOMAIN][entry_id]["storage"]
+
+        # Check if there's a pending code
+        if not learning_session.pending_code:
+            _LOGGER.error("No pending code to save")
+            return
+
+        # Parse tags
+        tags = [tag.strip() for tag in tags_str.split(",") if tag.strip()]
+
+        # Save code to storage
+        pending = learning_session.pending_code
+        await storage.async_add_code(
+            name=name,
+            carrier_hz=pending.carrier_hz,
+            pulses=pending.pulses,
+            tags=tags,
+            notes=notes,
+        )
+
+        _LOGGER.info("Saved pending code as: %s", name)
+
+        # Clear pending code
+        learning_session.clear_pending()
+
+        # Reload entry to create new button entity
+        await hass.config_entries.async_reload(entry_id)
+
     # Register services
     hass.services.async_register(
         DOMAIN, SERVICE_LEARN_START, handle_learn_start, schema=LEARN_START_SCHEMA
@@ -177,6 +227,9 @@ async def async_setup_services(hass: HomeAssistant) -> None:
     hass.services.async_register(
         DOMAIN, SERVICE_RENAME_CODE, handle_rename_code, schema=RENAME_CODE_SCHEMA
     )
+    hass.services.async_register(
+        DOMAIN, SERVICE_SAVE_PENDING, handle_save_pending, schema=SAVE_PENDING_SCHEMA
+    )
 
 
 async def async_unload_services(hass: HomeAssistant) -> None:
@@ -187,3 +240,4 @@ async def async_unload_services(hass: HomeAssistant) -> None:
     hass.services.async_remove(DOMAIN, SERVICE_SEND_CODE)
     hass.services.async_remove(DOMAIN, SERVICE_DELETE_CODE)
     hass.services.async_remove(DOMAIN, SERVICE_RENAME_CODE)
+    hass.services.async_remove(DOMAIN, SERVICE_SAVE_PENDING)
