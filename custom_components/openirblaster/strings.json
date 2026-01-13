@@ -1,0 +1,123 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Set up OpenIRBlaster",
+        "description": "Select your OpenIRBlaster device from the list below.",
+        "data": {
+          "device": "OpenIRBlaster Device"
+        }
+      }
+    },
+    "error": {
+      "entity_not_found": "The learning mode switch entity was not found. Please ensure your ESPHome device is online and the firmware includes the 'IR Learning Mode' switch.",
+      "device_not_found": "The selected device could not be found in the device registry.",
+      "cannot_connect": "Failed to connect to the device",
+      "unknown": "Unexpected error occurred"
+    },
+    "abort": {
+      "already_configured": "This device is already configured",
+      "no_devices_found": "No OpenIRBlaster devices found. Please ensure:\n1. Your ESPHome device is online and connected\n2. The device uses firmware version 0.1.2 or later\n3. The firmware includes project name 'jaycollett.openirblaster'"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "OpenIRBlaster Options",
+        "menu_options": {
+          "manage_codes": "Manage IR Codes",
+          "settings": "Settings"
+        }
+      },
+      "save_code": {
+        "title": "Save Learned IR Code",
+        "description": "A new IR code was learned:\n\nCarrier: {carrier_hz} Hz\nPulses: {pulse_count}\nTimestamp: {timestamp}\n\nEnter a name to save this code.",
+        "data": {
+          "name": "Code Name",
+          "tags": "Tags (comma-separated, optional)",
+          "notes": "Notes (optional)"
+        }
+      },
+      "manage_codes": {
+        "title": "Manage IR Codes"
+      },
+      "settings": {
+        "title": "Settings"
+      }
+    },
+    "abort": {
+      "not_loaded": "Integration not loaded",
+      "not_implemented": "This feature is not yet implemented"
+    }
+  },
+  "services": {
+    "learn_start": {
+      "name": "Start Learning",
+      "description": "Start a learning session to capture an IR code.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Config Entry ID",
+          "description": "The config entry ID of the OpenIRBlaster device."
+        },
+        "timeout": {
+          "name": "Timeout",
+          "description": "Learning timeout in seconds (default: 30)."
+        }
+      }
+    },
+    "send_code": {
+      "name": "Send IR Code",
+      "description": "Send a stored IR code or a custom code.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Config Entry ID",
+          "description": "The config entry ID of the OpenIRBlaster device."
+        },
+        "code_id": {
+          "name": "Code ID",
+          "description": "The ID of the code to send."
+        },
+        "carrier_hz": {
+          "name": "Carrier Frequency (override)",
+          "description": "Override carrier frequency in Hz (optional)."
+        },
+        "pulses": {
+          "name": "Pulses (override)",
+          "description": "Override pulse array (optional)."
+        }
+      }
+    },
+    "delete_code": {
+      "name": "Delete IR Code",
+      "description": "Delete a stored IR code.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Config Entry ID",
+          "description": "The config entry ID of the OpenIRBlaster device."
+        },
+        "code_id": {
+          "name": "Code ID",
+          "description": "The ID of the code to delete."
+        }
+      }
+    },
+    "rename_code": {
+      "name": "Rename IR Code",
+      "description": "Rename a stored IR code.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Config Entry ID",
+          "description": "The config entry ID of the OpenIRBlaster device."
+        },
+        "code_id": {
+          "name": "Code ID",
+          "description": "The ID of the code to rename."
+        },
+        "new_name": {
+          "name": "New Name",
+          "description": "The new name for the code."
+        }
+      }
+    }
+  }
+}
