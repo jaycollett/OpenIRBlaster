@@ -23,7 +23,7 @@ logger:
   level: INFO
 
 api:
-  reboot_timeout: 5min
+  reboot_timeout: 0s
   services:
     - service: send_ir_raw
       variables:
@@ -49,11 +49,10 @@ wifi:
 
 captive_portal:
 
-# For ISO-ish timestamps in the learned event payload
+# For ISO-ish timestamps in the learned event payload (sourced from HA time)
 time:
-  - platform: sntp
+  - platform: homeassistant
     id: ha_time
-    timezone: UTC
 
 globals:
   - id: learn_enabled
