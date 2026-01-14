@@ -85,13 +85,19 @@ class OpenIRBlasterButtonBase(ButtonEntity):
 
     _attr_has_entity_name = True
 
-    def __init__(self, entry: ConfigEntry) -> None:
-        """Initialize the button."""
+    def __init__(self, entry: ConfigEntry, use_controls_device: bool = False) -> None:
+        """Initialize the button.
+
+        Args:
+            entry: Config entry
+            use_controls_device: If True, assigns to controls device; if False, to main device
+        """
         self._entry = entry
         device_id = entry.data[CONF_DEVICE_ID]
-        # Device already created in __init__.py, just reference it
+        # Reference either main device or controls device
+        device_identifier = f"{device_id}_controls" if use_controls_device else device_id
         self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, device_id)},
+            identifiers={(DOMAIN, device_identifier)},
         )
 
 
@@ -104,7 +110,7 @@ class LearnButton(OpenIRBlasterButtonBase):
         learning_session: LearningSession,
     ) -> None:
         """Initialize the learn button."""
-        super().__init__(entry)
+        super().__init__(entry, use_controls_device=True)  # Assign to controls device
         self._learning_session = learning_session
         self._attr_unique_id = UNIQUE_ID_LEARN_BUTTON.format(entry_id=entry.entry_id)
         self._attr_name = "Learn IR Code"
@@ -192,6 +198,26 @@ class LearnButton(OpenIRBlasterButtonBase):
             # Get storage from hass.data
             storage: OpenIRBlasterStorage = self.hass.data[DOMAIN][self._entry.entry_id]["storage"]
 
+            # Check for duplicate name
+            if storage.name_exists(self._pending_save_name):
+                _LOGGER.warning("Code name '%s' already exists", self._pending_save_name)
+                # Show error notification
+                await self.hass.services.async_call(
+                    "persistent_notification",
+                    "create",
+                    {
+                        "notification_id": f"openirblaster_duplicate_{self._entry.entry_id}",
+                        "title": "OpenIRBlaster - Duplicate Name",
+                        "message": (
+                            f"A code named **{self._pending_save_name}** already exists. "
+                            f"Please choose a different name."
+                        ),
+                    },
+                )
+                # Clear the pending code and reset learning session
+                await self._learning_session.async_clear_pending()
+                return
+
             # Get the pending code
             pending_code = self._learning_session.pending_code
             if not pending_code:
@@ -252,7 +278,7 @@ class SendLastButton(OpenIRBlasterButtonBase):
         learning_session: LearningSession,
     ) -> None:
         """Initialize the send last button."""
-        super().__init__(entry)
+        super().__init__(entry, use_controls_device=True)  # Assign to controls device
         self._learning_session = learning_session
         self._attr_unique_id = UNIQUE_ID_SEND_LAST_BUTTON.format(
             entry_id=entry.entry_id
@@ -332,6 +358,8 @@ class CodeButton(OpenIRBlasterButtonBase):
 class DeleteCodeButton(OpenIRBlasterButtonBase):
     """Button to delete a specific stored IR code."""
 
+    _attr_entity_registry_enabled_default = False  # Disabled by default for safety
+
     def __init__(
         self,
         entry: ConfigEntry,
@@ -339,7 +367,7 @@ class DeleteCodeButton(OpenIRBlasterButtonBase):
         name: str,
     ) -> None:
         """Initialize the delete button."""
-        super().__init__(entry)
+        super().__init__(entry, use_controls_device=True)  # Assign to controls device
         self._code_id = code_id
         self._attr_unique_id = f"{entry.entry_id}_{code_id}_delete"
         self._attr_name = f"Delete {name}"

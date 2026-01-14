@@ -92,6 +92,14 @@ class OpenIRBlasterStorage:
         """Check if a code ID exists."""
         return self.get_code(code_id) is not None
 
+    def name_exists(self, name: str) -> bool:
+        """Check if a code name already exists (case-insensitive)."""
+        name_lower = name.lower().strip()
+        for code in self._data.get("codes", []):
+            if code.get(ATTR_CODE_NAME, "").lower().strip() == name_lower:
+                return True
+        return False
+
     async def async_add_code(
         self,
         name: str,

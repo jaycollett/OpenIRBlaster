@@ -43,8 +43,9 @@ class OpenIRBlasterCodeNameText(TextEntity):
         """Initialize the text entity."""
         self._entry = entry
         self._attr_unique_id = UNIQUE_ID_CODE_NAME_INPUT.format(entry_id=entry.entry_id)
+        # Assign to controls device for learning/management
         self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, device_id)},
+            identifiers={(DOMAIN, f"{device_id}_controls")},
         )
         self._attr_native_value = "Enter Code Name"
 
