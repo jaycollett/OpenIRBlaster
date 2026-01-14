@@ -47,14 +47,28 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         entry.data[CONF_LEARNING_SWITCH_ENTITY_ID],
     )
 
-    # Register device in registry (entities will reference this)
+    # Register devices in registry
+    # Device 1: Main physical device (for learned IR buttons and ESPHome sensors)
+    # Device 2: Controls device (for learning controls, delete buttons)
     device_registry = dr.async_get(hass)
+
+    # Main physical ESPHome device
     device_registry.async_get_or_create(
         config_entry_id=entry.entry_id,
         identifiers={(DOMAIN, device_id)},
         name=f"OpenIRBlaster {device_id}",
         manufacturer="OpenIRBlaster",
         model="ESP8266 IR Blaster",
+    )
+
+    # Virtual controls device for learning/management
+    device_registry.async_get_or_create(
+        config_entry_id=entry.entry_id,
+        identifiers={(DOMAIN, f"{device_id}_controls")},
+        name=f"OpenIRBlaster {device_id} Controls",
+        manufacturer="OpenIRBlaster",
+        model="Learning & Management",
+        via_device=(DOMAIN, device_id),  # Shows as connected through main device
     )
 
     # Store objects in hass.data
