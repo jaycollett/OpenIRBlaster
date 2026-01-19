@@ -7,10 +7,10 @@ substitutions:
 esphome:
   name: ${name}
   friendly_name: ${friendly_name}
-  name_add_mac_suffix: false
+  name_add_mac_suffix: true
   project:
     name: "jaycollett.openirblaster"
-    version: "0.1.2"
+    version: "0.2.0"
 
 dashboard_import:
   package_import_url: github://jaycollett/OpenIRBlaster/hardware/firmware/factory_config.yaml@master
@@ -159,18 +159,9 @@ remote_receiver:
                 event: esphome.openirblaster_learned
                 data:
                   device_id: !lambda |-
-                    // Construct device_id with MAC suffix to match HA device name
-                    // HA names the device as "openirblaster-64c999" (base name + last 6 MAC chars)
-                    std::string mac = get_mac_address();
-                    std::string mac_suffix = "";
-                    for (size_t i = 0; i < mac.length(); i++) {
-                      if (mac[i] != ':') mac_suffix += tolower(mac[i]);
-                    }
-                    // Take last 6 characters
-                    if (mac_suffix.length() >= 6) {
-                      mac_suffix = mac_suffix.substr(mac_suffix.length() - 6);
-                    }
-                    return App.get_name() + std::string("-") + mac_suffix;
+                    // With name_add_mac_suffix: true, App.get_name() returns
+                    // the full unique device name (e.g., "openirblaster-64c999")
+                    return App.get_name();
                   carrier_hz: !lambda |-
                     return (int) atoi("${default_carrier_hz}");
                   pulses_json: !lambda |-
@@ -208,16 +199,8 @@ remote_receiver:
                 int rssi = 0;
                 if (!isnan(id(wifi_rssi).state)) rssi = (int) id(wifi_rssi).state;
 
-                // Construct device_id with MAC suffix to match HA device name
-                std::string mac = get_mac_address();
-                std::string mac_suffix = "";
-                for (size_t i = 0; i < mac.length(); i++) {
-                  if (mac[i] != ':') mac_suffix += tolower(mac[i]);
-                }
-                if (mac_suffix.length() >= 6) {
-                  mac_suffix = mac_suffix.substr(mac_suffix.length() - 6);
-                }
-                std::string device_id = App.get_name() + std::string("-") + mac_suffix;
+                // With name_add_mac_suffix: true, App.get_name() returns the full unique name
+                std::string device_id = App.get_name();
 
                 std::string out;
                 out.reserve(2000);
