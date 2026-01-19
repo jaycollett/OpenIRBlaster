@@ -7,19 +7,13 @@ substitutions:
 esphome:
   name: ${name}
   friendly_name: ${friendly_name}
-  # NOTE: This is the FACTORY FLASH firmware. name_add_mac_suffix: true ensures
-  # each device advertises with a unique name (e.g., "openirblaster-64c999").
-  # When ESPHome adopts the device, it captures this full unique name.
-  # The adopted config (factory_config.yaml) has name_add_mac_suffix: false
-  # to prevent double-appending the MAC suffix.
+  # name_add_mac_suffix ensures each device has a unique name (e.g., "openirblaster-64c999")
+  # This is the complete firmware - no ESPHome dashboard adoption needed.
+  # Users connect via captive portal, then HA auto-discovers the device.
   name_add_mac_suffix: true
   project:
     name: "jaycollett.openirblaster"
-    version: "0.2.1"
-
-dashboard_import:
-  package_import_url: github://jaycollett/OpenIRBlaster/hardware/firmware/factory_config.yaml@master
-  import_full_config: true
+    version: "0.3.0"
 
 esp8266:
   board: esp12e
