@@ -7,11 +7,12 @@ substitutions:
 esphome:
   name: ${name}
   friendly_name: ${friendly_name}
-  # NOTE: name_add_mac_suffix is false here because when ESPHome adopts a device,
-  # it detects the full name (with MAC suffix) and puts it in the substitution.
-  # The factory-flashed firmware has name_add_mac_suffix: true, so devices
-  # advertise as "openirblaster-xxxxxx" and adoption captures that unique name.
-  name_add_mac_suffix: false
+  # NOTE: This is the FACTORY FLASH firmware. name_add_mac_suffix: true ensures
+  # each device advertises with a unique name (e.g., "openirblaster-64c999").
+  # When ESPHome adopts the device, it captures this full unique name.
+  # The adopted config (factory_config.yaml) has name_add_mac_suffix: false
+  # to prevent double-appending the MAC suffix.
+  name_add_mac_suffix: true
   project:
     name: "jaycollett.openirblaster"
     version: "0.2.1"
