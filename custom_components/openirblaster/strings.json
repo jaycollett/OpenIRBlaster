@@ -12,8 +12,20 @@
     "error": {
       "entity_not_found": "The learning mode switch entity was not found. Please ensure your ESPHome device is online and the firmware includes the 'IR Learning Mode' switch.",
       "device_not_found": "The selected device could not be found in the device registry.",
+      "service_not_found": "The ESPHome send_ir_raw service was not found. Please ensure your ESPHome device is online and the firmware includes the 'send_ir_raw' service.",
       "cannot_connect": "Failed to connect to the device",
       "unknown": "Unexpected error occurred"
+    },
+    "exceptions": {
+      "config_entry_not_found": {
+        "message": "Config entry not found. The OpenIRBlaster device may have been removed."
+      },
+      "code_not_found": {
+        "message": "IR code not found. It may have been deleted."
+      },
+      "no_pending_code": {
+        "message": "No pending code to save. Learn a code first by pressing the Learn button."
+      }
     },
     "abort": {
       "already_configured": "This device is already configured",
@@ -73,7 +85,7 @@
           "name": "Config Entry ID",
           "description": "The config entry ID of the OpenIRBlaster device."
         },
-        "code_id": {
+        "id": {
           "name": "Code ID",
           "description": "The ID of the code to send."
         },
@@ -95,7 +107,7 @@
           "name": "Config Entry ID",
           "description": "The config entry ID of the OpenIRBlaster device."
         },
-        "code_id": {
+        "id": {
           "name": "Code ID",
           "description": "The ID of the code to delete."
         }
@@ -109,7 +121,7 @@
           "name": "Config Entry ID",
           "description": "The config entry ID of the OpenIRBlaster device."
         },
-        "code_id": {
+        "id": {
           "name": "Code ID",
           "description": "The ID of the code to rename."
         },

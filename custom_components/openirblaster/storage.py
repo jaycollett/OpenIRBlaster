@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from homeassistant.core import HomeAssistant
@@ -42,8 +42,10 @@ class OpenIRBlasterStorage:
 
     async def async_load(self) -> dict[str, Any]:
         """Load data from storage."""
+        _LOGGER.debug("Loading storage for entry %s", self.entry_id)
         data = await self._store.async_load()
         if data is None:
+            _LOGGER.info("No existing storage found for entry %s, initializing empty", self.entry_id)
             # Initialize with empty structure
             self._data = {
                 "version": STORAGE_VERSION,
@@ -56,6 +58,12 @@ class OpenIRBlasterStorage:
             }
         else:
             self._data = data
+            num_codes = len(data.get("codes", []))
+            _LOGGER.info(
+                "Loaded storage for entry %s: %d codes found",
+                self.entry_id,
+                num_codes,
+            )
             # Handle migrations if needed
             await self._async_migrate()
         return self._data
@@ -112,7 +120,7 @@ class OpenIRBlasterStorage:
         # Generate unique ID from name
         code_id = self._generate_unique_id(name)
 
-        now = datetime.now().isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         code = {
             ATTR_CODE_ID: code_id,
             ATTR_CODE_NAME: name,
@@ -158,7 +166,7 @@ class OpenIRBlasterStorage:
         if notes is not None:
             code[ATTR_NOTES] = notes
 
-        code[ATTR_UPDATED_AT] = datetime.now().isoformat()
+        code[ATTR_UPDATED_AT] = datetime.now(timezone.utc).isoformat()
 
         await self.async_save()
         _LOGGER.info("Updated code %s", code_id)
@@ -199,11 +207,13 @@ class OpenIRBlasterStorage:
 
         return slug
 
-    def update_device_info(self, device_id: str, name: str | None = None) -> None:
-        """Update device information in storage."""
+    async def async_update_device_info(self, device_id: str, name: str | None = None) -> None:
+        """Update device information in storage and save."""
         if "device" not in self._data:
             self._data["device"] = {}
 
         self._data["device"]["device_id"] = device_id
         if name:
             self._data["device"]["name"] = name
+
+        await self.async_save()

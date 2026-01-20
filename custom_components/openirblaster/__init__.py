@@ -11,10 +11,10 @@ from homeassistant.helpers import device_registry as dr
 
 from .const import (
     CONF_DEVICE_ID,
-    CONF_ESPHOME_DEVICE_NAME,
     CONF_LEARNING_SWITCH_ENTITY_ID,
     DOMAIN,
 )
+from .helpers import discover_esphome_service
 from .learning import LearningSession
 from .services import async_setup_services, async_unload_services
 from .storage import OpenIRBlasterStorage
@@ -31,13 +31,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up OpenIRBlaster from a config entry."""
     _LOGGER.info("Setting up OpenIRBlaster integration for entry %s", entry.entry_id)
 
+    device_id = entry.data[CONF_DEVICE_ID]
+
     # Initialize storage
     storage = OpenIRBlasterStorage(hass, entry.entry_id)
     await storage.async_load()
 
     # Update device info in storage
-    device_id = entry.data[CONF_DEVICE_ID]
-    storage.update_device_info(device_id)
+    await storage.async_update_device_info(device_id)
 
     # Initialize learning session
     learning_session = LearningSession(
@@ -71,6 +72,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         via_device=(DOMAIN, device_id),  # Shows as connected through main device
     )
 
+    # Discover ESPHome service name (with runtime discovery for resilience)
+    esphome_service_name = discover_esphome_service(hass, entry)
+    if not esphome_service_name:
+        _LOGGER.warning(
+            "ESPHome service not found during setup. IR transmission will not work "
+            "until the ESPHome device is online."
+        )
+
     # Store objects in hass.data
     hass.data.setdefault(DOMAIN, {})
 
@@ -81,6 +90,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "storage": storage,
         "learning_session": learning_session,
         "config_entry": entry,
+        "esphome_service_name": esphome_service_name,
         # Restore sensor data from cache
         "last_learned_name": cached_sensor_data.get("last_learned_name"),
         "last_learned_timestamp": cached_sensor_data.get("last_learned_timestamp"),

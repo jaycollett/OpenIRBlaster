@@ -30,16 +30,22 @@ Perfect for controlling TVs, AC units, fans, projectors, and other infrared-cont
 ### Recommended Hardware
 
 - **ESP8266** (ESP-12E) or **ESP32**
-- **IR Receiver**: TSOP38238 (GPIO4)
+- **IR Receiver**: TSOP38238 (GPIO5)
 - **IR LED**: 950nm IR LED (GPIO14)
 - **Transistor**: IRLML6344 or similar for LED driving
 
 ### Firmware Installation
 
-1. Copy the ESPHome configuration from `hardware/firmware/factory_config.yaml`
-2. Customize the WiFi settings and device name
-3. Flash to your ESP device using ESPHome
-4. Verify the device appears in Home Assistant's ESPHome integration
+**Option 1: Pre-built Binary (Easiest)**
+1. Download `factory_flash.bin` from [releases](https://github.com/jaycollett/OpenIRBlaster/releases)
+2. Flash using [ESPHome Web Flasher](https://web.esphome.io/) or esptool
+3. Connect to "OpenIRBlaster Setup" WiFi and configure your network
+4. The device will appear in Home Assistant automatically
+
+**Option 2: Build from Source**
+1. Copy `hardware/firmware/factory_flash.yaml` to your ESPHome dashboard
+2. Compile and flash to your ESP device
+3. Connect to "OpenIRBlaster Setup" WiFi and configure your network
 
 See the `hardware/` directory for circuit diagrams and detailed build instructions.
 

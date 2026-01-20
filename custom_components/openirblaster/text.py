@@ -10,7 +10,12 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import CONF_DEVICE_ID, DOMAIN, UNIQUE_ID_CODE_NAME_INPUT
+from .const import (
+    CONF_DEVICE_ID,
+    DEFAULT_CODE_NAME_PLACEHOLDER,
+    DOMAIN,
+    UNIQUE_ID_CODE_NAME_INPUT,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -47,7 +52,7 @@ class OpenIRBlasterCodeNameText(TextEntity):
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, f"{device_id}_controls")},
         )
-        self._attr_native_value = "Enter Code Name"
+        self._attr_native_value = DEFAULT_CODE_NAME_PLACEHOLDER
 
     @property
     def native_value(self) -> str:
