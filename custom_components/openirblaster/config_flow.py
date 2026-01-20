@@ -388,13 +388,9 @@ class OpenIRBlasterOptionsFlow(config_entries.OptionsFlow):
             self._selected_code_name = code_name or code_id
             return await self.async_step_confirm_delete()
 
-        entry_title = self._config_entry.title
         options = [
             {
-                "label": (
-                    f"{code.get(ATTR_CODE_NAME)} ({code.get(ATTR_CODE_ID)}) "
-                    f"— {entry_title}"
-                ),
+                "label": f"{code.get(ATTR_CODE_NAME)} ({code.get(ATTR_CODE_ID)})",
                 "value": code.get(ATTR_CODE_ID),
             }
             for code in codes
@@ -448,10 +444,16 @@ class OpenIRBlasterOptionsFlow(config_entries.OptionsFlow):
                     "button", DOMAIN, delete_button_unique_id
                 )
 
-                if send_button_entity_id:
-                    registry.async_remove(send_button_entity_id)
-                if delete_button_entity_id:
-                    registry.async_remove(delete_button_entity_id)
+                candidates = {send_button_entity_id, delete_button_entity_id}
+                for entity in er.async_entries_for_config_entry(registry, entry_id):
+                    if entity.domain != "button":
+                        continue
+                    if entity.unique_id in {send_button_unique_id, delete_button_unique_id}:
+                        candidates.add(entity.entity_id)
+
+                for entity_id in candidates:
+                    if entity_id:
+                        registry.async_remove(entity_id)
 
                 await self.hass.config_entries.async_reload(entry_id)
                 return self.async_create_entry(title="", data={})
