@@ -122,6 +122,8 @@ class OpenIRBlasterButtonBase(ButtonEntity):
 class LearnButton(OpenIRBlasterButtonBase):
     """Button to start learning a new IR code."""
 
+    _attr_translation_key = "learn"
+
     def __init__(
         self,
         entry: ConfigEntry,
@@ -131,7 +133,6 @@ class LearnButton(OpenIRBlasterButtonBase):
         super().__init__(entry, use_controls_device=True)  # Assign to controls device
         self._learning_session = learning_session
         self._attr_unique_id = UNIQUE_ID_LEARN_BUTTON.format(entry_id=entry.entry_id)
-        self._attr_name = "Learn IR Code"
         self._attr_icon = "mdi:remote-tv"
 
         # Store entry for later entity ID lookup
@@ -297,6 +298,8 @@ class LearnButton(OpenIRBlasterButtonBase):
 class SendLastButton(OpenIRBlasterButtonBase):
     """Button to send the last learned code (for debugging)."""
 
+    _attr_translation_key = "send_last"
+
     def __init__(
         self,
         entry: ConfigEntry,
@@ -308,7 +311,6 @@ class SendLastButton(OpenIRBlasterButtonBase):
         self._attr_unique_id = UNIQUE_ID_SEND_LAST_BUTTON.format(
             entry_id=entry.entry_id
         )
-        self._attr_name = "Send Last Learned"
         self._attr_icon = "mdi:send"
 
     async def async_press(self) -> None:
@@ -395,6 +397,7 @@ class DeleteCodeButton(OpenIRBlasterButtonBase):
     """Button to delete a specific stored IR code."""
 
     _attr_entity_registry_enabled_default = False  # Disabled by default for safety
+    _attr_translation_key = "delete_code"
 
     def __init__(
         self,
@@ -406,7 +409,7 @@ class DeleteCodeButton(OpenIRBlasterButtonBase):
         super().__init__(entry, use_controls_device=True)  # Assign to controls device
         self._code_id = code_id
         self._attr_unique_id = f"{entry.entry_id}_{code_id}_delete"
-        self._attr_name = f"Delete {name}"
+        self._attr_translation_placeholders = {"code_name": name}
         self._attr_icon = "mdi:delete"
 
     async def async_press(self) -> None:

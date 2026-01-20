@@ -51,6 +51,35 @@
       "not_implemented": "This feature is not yet implemented"
     }
   },
+  "entity": {
+    "button": {
+      "learn": {
+        "name": "Learn IR Code"
+      },
+      "delete_code": {
+        "name": "Delete {code_name}"
+      },
+      "send_last": {
+        "name": "Send Last Learned"
+      }
+    },
+    "sensor": {
+      "last_learned_name": {
+        "name": "Last Learned Code Name"
+      },
+      "last_learned_timestamp": {
+        "name": "Last Learned Timestamp"
+      },
+      "last_learned_pulse_count": {
+        "name": "Last Learned Pulse Count"
+      }
+    },
+    "text": {
+      "code_name_input": {
+        "name": "Code Name"
+      }
+    }
+  },
   "services": {
     "learn_start": {
       "name": "Start Learning",
