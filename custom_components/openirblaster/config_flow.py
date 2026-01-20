@@ -388,9 +388,13 @@ class OpenIRBlasterOptionsFlow(config_entries.OptionsFlow):
             self._selected_code_name = code_name or code_id
             return await self.async_step_confirm_delete()
 
+        entry_title = self._config_entry.title
         options = [
             {
-                "label": f"{code.get(ATTR_CODE_NAME)} ({code.get(ATTR_CODE_ID)})",
+                "label": (
+                    f"{code.get(ATTR_CODE_NAME)} ({code.get(ATTR_CODE_ID)}) "
+                    f"— {entry_title}"
+                ),
                 "value": code.get(ATTR_CODE_ID),
             }
             for code in codes
