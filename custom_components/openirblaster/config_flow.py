@@ -285,12 +285,17 @@ class OpenIRBlasterOptionsFlow(config_entries.OptionsFlow):
         self._selected_code_id: str | None = None
         self._selected_code_name: str | None = None
 
+    @property
+    def config_entry(self) -> config_entries.ConfigEntry:
+        """Return the config entry for this options flow."""
+        return self._config_entry
+
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
         """Manage the options."""
         # Check if there's a pending learned code
-        entry_id = self.config_entry.entry_id
+        entry_id = self._config_entry.entry_id
         if DOMAIN not in self.hass.data or entry_id not in self.hass.data[DOMAIN]:
             return self.async_abort(reason="not_loaded")
 
@@ -309,7 +314,7 @@ class OpenIRBlasterOptionsFlow(config_entries.OptionsFlow):
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
         """Save a pending learned code."""
-        entry_id = self.config_entry.entry_id
+        entry_id = self._config_entry.entry_id
         storage = self.hass.data[DOMAIN][entry_id]["storage"]
         learning_session = self.hass.data[DOMAIN][entry_id]["learning_session"]
 
@@ -363,7 +368,7 @@ class OpenIRBlasterOptionsFlow(config_entries.OptionsFlow):
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
         """Manage stored codes."""
-        entry_id = self.config_entry.entry_id
+        entry_id = self._config_entry.entry_id
         storage = self.hass.data[DOMAIN][entry_id]["storage"]
 
         codes = storage.get_codes()
@@ -411,7 +416,7 @@ class OpenIRBlasterOptionsFlow(config_entries.OptionsFlow):
     ) -> FlowResult:
         """Confirm deletion of a selected code."""
         errors: dict[str, str] = {}
-        entry_id = self.config_entry.entry_id
+        entry_id = self._config_entry.entry_id
         storage = self.hass.data[DOMAIN][entry_id]["storage"]
 
         if not self._selected_code_id:
