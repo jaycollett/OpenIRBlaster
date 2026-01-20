@@ -39,7 +39,15 @@
         }
       },
       "manage_codes": {
-        "title": "Manage IR Codes"
+        "title": "Manage IR Codes",
+        "description": "Select a code to delete."
+      },
+      "confirm_delete": {
+        "title": "Confirm Delete",
+        "description": "Delete the code \"{code_name}\"? This cannot be undone.",
+        "data": {
+          "confirm": "I understand, delete this code"
+        }
       },
       "settings": {
         "title": "Settings"
@@ -47,7 +55,8 @@
     },
     "abort": {
       "not_loaded": "Integration not loaded",
-      "not_implemented": "This feature is not yet implemented"
+      "not_implemented": "This feature is not yet implemented",
+      "no_codes": "No IR codes have been saved yet."
     }
   },
   "entity": {
