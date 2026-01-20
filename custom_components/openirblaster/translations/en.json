@@ -67,9 +67,6 @@
       "learn": {
         "name": "Learn IR Code"
       },
-      "delete_code": {
-        "name": "Delete {code_name}"
-      },
       "send_last": {
         "name": "Send Last Learned"
       }
