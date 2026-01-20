@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 
-from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
+from homeassistant.components.sensor import RestoreSensor, SensorDeviceClass
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import DeviceInfo
@@ -43,7 +43,7 @@ async def async_setup_entry(
     async_add_entities(entities)
 
 
-class OpenIRBlasterSensorBase(SensorEntity):
+class OpenIRBlasterSensorBase(RestoreSensor):
     """Base class for OpenIRBlaster sensors."""
 
     _attr_has_entity_name = True
@@ -57,6 +57,7 @@ class OpenIRBlasterSensorBase(SensorEntity):
         self._entry = entry
         self._learning_session = learning_session
         self._last_learned_code: LearnedCode | None = None
+        self._restored_native_value = None
 
         device_id = entry.data[CONF_DEVICE_ID]
         # Device already created in __init__.py, just reference it
@@ -66,6 +67,13 @@ class OpenIRBlasterSensorBase(SensorEntity):
 
         # Register callback for learning session state changes
         learning_session.register_callback(self._handle_state_change)
+
+    async def async_added_to_hass(self) -> None:
+        """Restore last state on startup."""
+        await super().async_added_to_hass()
+        last = await self.async_get_last_sensor_data()
+        if last is not None:
+            self._restored_native_value = last.native_value
 
     async def async_will_remove_from_hass(self) -> None:
         """Clean up when entity is removed."""
@@ -85,6 +93,8 @@ class OpenIRBlasterSensorBase(SensorEntity):
 class LastLearnedNameSensor(OpenIRBlasterSensorBase):
     """Sensor showing the name/ID of the last learned code."""
 
+    _attr_translation_key = "last_learned_name"
+
     def __init__(
         self,
         entry: ConfigEntry,
@@ -95,7 +105,6 @@ class LastLearnedNameSensor(OpenIRBlasterSensorBase):
         self._attr_unique_id = UNIQUE_ID_LAST_LEARNED_NAME.format(
             entry_id=entry.entry_id
         )
-        self._attr_name = "Last Learned Code Name"
         self._attr_icon = "mdi:tag"
 
     @property
@@ -109,11 +118,15 @@ class LastLearnedNameSensor(OpenIRBlasterSensorBase):
         # Fallback to device_id if no name set yet
         if self._last_learned_code:
             return self._last_learned_code.device_id
+        if self._restored_native_value:
+            return str(self._restored_native_value)
         return None
 
 
 class LastLearnedTimestampSensor(OpenIRBlasterSensorBase):
     """Sensor showing when the last code was learned."""
+
+    _attr_translation_key = "last_learned_timestamp"
 
     def __init__(
         self,
@@ -125,7 +138,6 @@ class LastLearnedTimestampSensor(OpenIRBlasterSensorBase):
         self._attr_unique_id = UNIQUE_ID_LAST_LEARNED_AT.format(
             entry_id=entry.entry_id
         )
-        self._attr_name = "Last Learned Timestamp"
         self._attr_icon = "mdi:clock"
         self._attr_device_class = SensorDeviceClass.TIMESTAMP
 
@@ -147,11 +159,20 @@ class LastLearnedTimestampSensor(OpenIRBlasterSensorBase):
                 return datetime.fromisoformat(self._last_learned_code.timestamp.replace("Z", "+00:00"))
             except ValueError:
                 _LOGGER.warning("Could not parse timestamp: %s", self._last_learned_code.timestamp)
+        if self._restored_native_value:
+            if isinstance(self._restored_native_value, datetime):
+                return self._restored_native_value
+            try:
+                return datetime.fromisoformat(str(self._restored_native_value).replace("Z", "+00:00"))
+            except ValueError:
+                _LOGGER.warning("Could not parse restored timestamp: %s", self._restored_native_value)
         return None
 
 
 class LastLearnedLengthSensor(OpenIRBlasterSensorBase):
     """Sensor showing the pulse count of the last learned code."""
+
+    _attr_translation_key = "last_learned_pulse_count"
 
     def __init__(
         self,
@@ -163,7 +184,6 @@ class LastLearnedLengthSensor(OpenIRBlasterSensorBase):
         self._attr_unique_id = UNIQUE_ID_LAST_LEARNED_LEN.format(
             entry_id=entry.entry_id
         )
-        self._attr_name = "Last Learned Pulse Count"
         self._attr_icon = "mdi:counter"
         self._attr_native_unit_of_measurement = "pulses"
 
@@ -178,4 +198,9 @@ class LastLearnedLengthSensor(OpenIRBlasterSensorBase):
         # Fallback to in-memory code
         if self._last_learned_code:
             return len(self._last_learned_code.pulses)
+        if self._restored_native_value is not None:
+            try:
+                return int(self._restored_native_value)
+            except (TypeError, ValueError):
+                _LOGGER.warning("Could not parse restored pulse count: %s", self._restored_native_value)
         return None
