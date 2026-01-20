@@ -22,6 +22,7 @@ from .const import (
     CONF_LEARNING_SWITCH_ENTITY_ID,
     DOMAIN,
     STATE_RECEIVED,
+    UNIQUE_ID_CODE_BUTTON,
 )
 from .learning import LearnedCode
 
@@ -430,6 +431,24 @@ class OpenIRBlasterOptionsFlow(config_entries.OptionsFlow):
             if not success:
                 errors["base"] = "code_not_found"
             else:
+                registry = er.async_get(self.hass)
+                send_button_unique_id = UNIQUE_ID_CODE_BUTTON.format(
+                    entry_id=entry_id, code_id=self._selected_code_id
+                )
+                delete_button_unique_id = f"{entry_id}_{self._selected_code_id}_delete"
+
+                send_button_entity_id = registry.async_get_entity_id(
+                    "button", DOMAIN, send_button_unique_id
+                )
+                delete_button_entity_id = registry.async_get_entity_id(
+                    "button", DOMAIN, delete_button_unique_id
+                )
+
+                if send_button_entity_id:
+                    registry.async_remove(send_button_entity_id)
+                if delete_button_entity_id:
+                    registry.async_remove(delete_button_entity_id)
+
                 await self.hass.config_entries.async_reload(entry_id)
                 return self.async_create_entry(title="", data={})
 
