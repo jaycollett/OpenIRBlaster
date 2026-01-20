@@ -64,22 +64,7 @@ class OpenIRBlasterStorage:
                 self.entry_id,
                 num_codes,
             )
-            # Handle migrations if needed
-            await self._async_migrate()
         return self._data
-
-    async def _async_migrate(self) -> None:
-        """Migrate storage schema if needed."""
-        current_version = self._data.get("version", 1)
-        if current_version < STORAGE_VERSION:
-            _LOGGER.info(
-                "Migrating storage from version %s to %s",
-                current_version,
-                STORAGE_VERSION,
-            )
-            # Add migration logic here when schema changes
-            self._data["version"] = STORAGE_VERSION
-            await self.async_save()
 
     async def async_save(self) -> None:
         """Save data to storage."""
