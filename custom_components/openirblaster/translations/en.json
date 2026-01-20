@@ -57,6 +57,9 @@
       "not_loaded": "Integration not loaded",
       "not_implemented": "This feature is not yet implemented",
       "no_codes": "No IR codes have been saved yet."
+    },
+    "error": {
+      "code_not_found": "The selected code could not be found."
     }
   },
   "entity": {
