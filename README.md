@@ -6,6 +6,8 @@ A Home Assistant custom integration that lets you learn, store, and replay infra
 [![License][license-shield]](LICENSE)
 [![hacs][hacsbadge]][hacs]
 
+Current release: **v1.0.1**
+
 ## What Does It Do?
 
 Turn any ESPHome device with an IR receiver and transmitter into a universal remote control for your smart home:
@@ -51,9 +53,9 @@ See the `hardware/` directory for circuit diagrams and detailed build instructio
 
 ## Installation
 
-### HACS (Recommended - Coming Soon)
+### HACS (Recommended)
 
-_This integration will be available via HACS once submitted to the default repository._
+If you don't see OpenIRBlaster in the default store yet, add this repo as a custom repository in HACS.
 
 ### Manual Installation
 
@@ -99,6 +101,13 @@ automation:
           entity_id: button.openirblaster_64c999_tv_power
 ```
 
+### 4. Delete a Code
+
+1. Go to **Settings** → **Devices & Services** → **OpenIRBlaster**
+2. Click **Configure** on the device
+3. Select **Manage IR Codes**
+4. Pick a code and confirm deletion
+
 ## Entities Created
 
 For each OpenIRBlaster device, you'll get:
@@ -110,7 +119,6 @@ For each OpenIRBlaster device, you'll get:
 - **Learn IR Code** - Start learning mode (after entering a code name)
 - **Send Last Learned** - Replay the most recently learned code
 - **{Your Code Names}** - One button for each saved code
-- **Delete {Code Name}** - Remove a saved code
 
 ### Sensors
 - **Last Learned Code Name** - Name of the most recent code
