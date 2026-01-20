@@ -6,6 +6,7 @@ DOMAIN = "openirblaster"
 CONF_LEARNING_SWITCH_ENTITY_ID = "learning_switch_entity_id"
 CONF_DEVICE_ID = "device_id"
 CONF_ESPHOME_DEVICE_NAME = "esphome_device_name"
+CONF_ESPHOME_SERVICE_NAME = "esphome_service_name"  # The actual ESPHome service name (e.g., "openirblaster_send_ir_raw")
 
 # Default entity patterns
 DEFAULT_LEARNING_SWITCH_PATTERN = "switch.{device}_ir_learning_mode"
@@ -30,6 +31,9 @@ STATE_TIMEOUT = "timeout"
 # Storage
 STORAGE_VERSION = 1
 STORAGE_KEY_PREFIX = "openirblaster_"
+
+# UI defaults
+DEFAULT_CODE_NAME_PLACEHOLDER = "Enter Code Name"
 
 # Services
 SERVICE_LEARN_START = "learn_start"

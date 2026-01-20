@@ -5,6 +5,7 @@
   "config_flow": true,
   "dependencies": ["esphome"],
   "documentation": "https://github.com/jaycollett/OpenIRBlaster",
+  "homeassistant": "2024.1.0",
   "integration_type": "device",
   "iot_class": "local_push",
   "issue_tracker": "https://github.com/jaycollett/OpenIRBlaster/issues",

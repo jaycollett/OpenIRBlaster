@@ -16,8 +16,8 @@ from homeassistant.helpers import device_registry as dr, entity_registry as er, 
 from .const import (
     CONF_DEVICE_ID,
     CONF_ESPHOME_DEVICE_NAME,
+    CONF_ESPHOME_SERVICE_NAME,
     CONF_LEARNING_SWITCH_ENTITY_ID,
-    DEFAULT_LEARNING_SWITCH_PATTERN,
     DOMAIN,
     STATE_RECEIVED,
 )
@@ -49,20 +49,28 @@ class OpenIRBlasterConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             if device.manufacturer != "jaycollett" or device.model != "openirblaster":
                 continue
 
-            # Extract device_id from ESPHome identifiers: ("esphome", "openirblaster-abc123")
-            device_id = None
+            # Extract base device name from ESPHome identifiers
+            base_device_name = None
             for identifier in device.identifiers:
                 if identifier[0] == "esphome":
-                    device_id = identifier[1]
+                    base_device_name = identifier[1]
                     break
 
             # Fallback: If no identifier found, try to get device_name from ESPHome config entry
-            if not device_id and device.config_entries:
+            if not base_device_name and device.config_entries:
                 for config_entry_id in device.config_entries:
                     config_entry = self.hass.config_entries.async_get_entry(config_entry_id)
                     if config_entry and config_entry.domain == "esphome":
-                        device_id = config_entry.data.get("device_name")
+                        base_device_name = config_entry.data.get("device_name")
                         break
+
+            if not base_device_name:
+                continue
+
+            # With name_add_mac_suffix: true in firmware, the ESPHome device name
+            # already includes the MAC suffix (e.g., "openirblaster-64c999")
+            device_id = base_device_name
+            _LOGGER.debug("Found device with device_id: %s", device_id)
 
             if not device_id or device_id in existing_device_ids:
                 continue
@@ -81,55 +89,143 @@ class OpenIRBlasterConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors = {}
 
         if user_input is not None:
-            device_id = user_input["device"]
+            device_id = user_input["device"]  # Full device_id with MAC suffix (e.g., openirblaster-293aea)
 
-            # Find device in registry
+            # Find device in registry by reconstructing the device_id and matching
             device_registry = dr.async_get(self.hass)
             selected_device = None
+            base_device_name = None
 
-            # Try to find by ESPHome identifier first
+            # Search for OpenIRBlaster devices and match by constructed device_id
             for device in device_registry.devices.values():
-                for identifier in device.identifiers:
-                    if identifier[0] == "esphome" and identifier[1] == device_id:
-                        selected_device = device
-                        break
-                if selected_device:
-                    break
+                if device.manufacturer != "jaycollett" or device.model != "openirblaster":
+                    continue
 
-            # Fallback: find by ESPHome config entry device_name
-            if not selected_device:
-                for device in device_registry.devices.values():
-                    if device.manufacturer == "jaycollett" and device.model == "openirblaster":
-                        for config_entry_id in device.config_entries:
-                            config_entry = self.hass.config_entries.async_get_entry(config_entry_id)
-                            if config_entry and config_entry.domain == "esphome":
-                                if config_entry.data.get("device_name") == device_id:
-                                    selected_device = device
-                                    break
-                    if selected_device:
+                # Get base name from ESPHome identifier
+                base_device_name = None
+                for identifier in device.identifiers:
+                    if identifier[0] == "esphome":
+                        base_device_name = identifier[1]
                         break
+
+                # Fallback: get device_name from ESPHome config entry
+                if not base_device_name and device.config_entries:
+                    for config_entry_id in device.config_entries:
+                        config_entry = self.hass.config_entries.async_get_entry(config_entry_id)
+                        if config_entry and config_entry.domain == "esphome":
+                            base_device_name = config_entry.data.get("device_name")
+                            break
+
+                if not base_device_name:
+                    continue
+
+                # With name_add_mac_suffix: true, ESPHome name already includes MAC suffix
+                if base_device_name == device_id:
+                    selected_device = device
+                    break
 
             if not selected_device:
                 errors["base"] = "device_not_found"
             else:
-                # Use device_id as esphome_device_name
-                device_name = device_id
+                # Extract base device name for ESPHome service discovery
+                device_name = base_device_name or device_id.rsplit("-", 1)[0]
 
-                # Generate learning switch entity ID
-                normalized_device_name = device_name.replace("-", "_")
-                learning_switch_entity_id = DEFAULT_LEARNING_SWITCH_PATTERN.format(
-                    device=normalized_device_name
-                )
-
-                # Validate learning switch exists
+                # Find the learning switch entity using robust identification
+                # Priority: 1) unique_id match, 2) original_name match, 3) entity_id pattern
                 entity_registry = er.async_get(self.hass)
-                if not entity_registry.async_get(learning_switch_entity_id):
-                    state = self.hass.states.get(learning_switch_entity_id)
-                    if state is None:
-                        errors["base"] = "entity_not_found"
+                learning_switch_entity_id = None
+
+                # Search for the IR learning mode switch entity on this device
+                # ESPHome unique_id format: {mac}-switch-{component_id}
+                # Since firmware defines `id: ir_learning_mode`, unique_id ends with that
+                candidates = []
+                for entity in er.async_entries_for_device(entity_registry, selected_device.id):
+                    if entity.domain != "switch":
+                        continue
+
+                    # Priority 1: Match by unique_id (most stable - survives renames)
+                    if entity.unique_id and "ir_learning_mode" in entity.unique_id:
+                        learning_switch_entity_id = entity.entity_id
+                        _LOGGER.debug(
+                            "Found learning switch by unique_id: %s (unique_id: %s)",
+                            entity.entity_id,
+                            entity.unique_id,
+                        )
+                        break
+
+                    # Collect candidates for fallback matching
+                    candidates.append(entity)
+
+                # Priority 2: Match by original_name (ESPHome's defined name)
+                if not learning_switch_entity_id:
+                    for entity in candidates:
+                        if entity.original_name == "IR Learning Mode":
+                            learning_switch_entity_id = entity.entity_id
+                            _LOGGER.debug(
+                                "Found learning switch by original_name: %s",
+                                entity.entity_id,
+                            )
+                            break
+
+                # Priority 3: Match by entity_id pattern (fallback)
+                if not learning_switch_entity_id:
+                    for entity in candidates:
+                        if entity.entity_id.endswith("_ir_learning_mode"):
+                            learning_switch_entity_id = entity.entity_id
+                            _LOGGER.debug(
+                                "Found learning switch by entity_id pattern: %s",
+                                entity.entity_id,
+                            )
+                            break
+
+                # Validate learning switch was found
+                if not learning_switch_entity_id:
+                    errors["base"] = "entity_not_found"
+                    _LOGGER.warning(
+                        "Learning switch entity not found for device: %s (device_id: %s). "
+                        "Searched %d switch entities on device.",
+                        selected_device.name,
+                        device_id,
+                        len(candidates),
+                    )
+
+                if not errors:
+                    # Discover the ESPHome send_ir_raw service name
+                    # ESPHome registers services as esphome.{device_name}_send_ir_raw
+                    esphome_service_name = None
+                    esphome_services = self.hass.services.async_services().get("esphome", {})
+
+                    # Try exact match first (device_name with hyphens converted to underscores)
+                    normalized_name = device_name.replace("-", "_")
+                    expected_service = f"{normalized_name}_send_ir_raw"
+                    if expected_service in esphome_services:
+                        esphome_service_name = expected_service
+                        _LOGGER.debug(
+                            "Found ESPHome service by exact match: %s",
+                            esphome_service_name,
+                        )
+
+                    # If not found, search for any *_send_ir_raw service
+                    # This handles cases where device naming differs
+                    if not esphome_service_name:
+                        for service_name in esphome_services:
+                            if service_name.endswith("_send_ir_raw"):
+                                # Found a potential match - use it if it's the only one
+                                # or if it somewhat matches our device name
+                                if esphome_service_name is None:
+                                    esphome_service_name = service_name
+                                    _LOGGER.debug(
+                                        "Found ESPHome service by pattern: %s",
+                                        esphome_service_name,
+                                    )
+
+                    if not esphome_service_name:
+                        errors["base"] = "service_not_found"
                         _LOGGER.warning(
-                            "Learning switch entity not found: %s",
-                            learning_switch_entity_id,
+                            "ESPHome send_ir_raw service not found for device: %s. "
+                            "Available esphome services: %s",
+                            device_name,
+                            list(esphome_services.keys()),
                         )
 
                 if not errors:
@@ -142,6 +238,7 @@ class OpenIRBlasterConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                             CONF_ESPHOME_DEVICE_NAME: device_name,
                             CONF_DEVICE_ID: device_id,
                             CONF_LEARNING_SWITCH_ENTITY_ID: learning_switch_entity_id,
+                            CONF_ESPHOME_SERVICE_NAME: esphome_service_name,
                         },
                     )
 

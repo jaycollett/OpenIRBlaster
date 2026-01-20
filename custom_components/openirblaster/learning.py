@@ -5,9 +5,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime
-from typing import Any, Callable
+from datetime import datetime, timezone
+from typing import Any
 
 from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers import event as ha_event
@@ -92,6 +93,12 @@ class LearningSession:
 
     def _notify_state_change(self) -> None:
         """Notify all registered callbacks of state change."""
+        _LOGGER.debug(
+            "Notifying %d callbacks of state change to %s (pending_code: %s)",
+            len(self._callbacks),
+            self._state,
+            self._pending_code is not None,
+        )
         # Iterate over a copy to allow callbacks to unregister during iteration
         # Catch exceptions to prevent one bad callback from crashing HA
         for callback_fn in self._callbacks[:]:
@@ -140,8 +147,15 @@ class LearningSession:
     def _async_handle_learned_event(self, event: Event) -> None:
         """Handle learned event from ESPHome device."""
         data = event.data
+        _LOGGER.debug(
+            "Received learned event with data: %s (session device_id: %s, state: %s)",
+            data,
+            self.device_id,
+            self._state,
+        )
 
-        # Filter by device_id
+        # Filter by device_id - must be exact match
+        # Both firmware and config entry should use format: "openirblaster-293aea" (name + MAC suffix)
         event_device_id = data.get(ATTR_DEVICE_ID, "")
         if event_device_id != self.device_id:
             _LOGGER.debug(
@@ -151,6 +165,8 @@ class LearningSession:
             )
             return
 
+        _LOGGER.info("Received IR code from device %s", event_device_id)
+
         if self._state != STATE_ARMED:
             _LOGGER.warning(
                 "Received learned event but session not armed (state: %s)", self._state
@@ -159,7 +175,7 @@ class LearningSession:
 
         # Validate payload
         carrier_hz = data.get(ATTR_CARRIER_HZ)
-        timestamp = data.get(ATTR_TIMESTAMP, datetime.now().isoformat())
+        timestamp = data.get(ATTR_TIMESTAMP, datetime.now(timezone.utc).isoformat())
 
         # Parse pulses from JSON string (firmware sends pulses_json) or array
         pulses = []

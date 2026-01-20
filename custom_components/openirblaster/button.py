@@ -19,18 +19,17 @@ from .const import (
     ATTR_CODE_NAME,
     ATTR_PULSES,
     CONF_DEVICE_ID,
-    CONF_ESPHOME_DEVICE_NAME,
+    DEFAULT_CODE_NAME_PLACEHOLDER,
     DOMAIN,
     STATE_ARMED,
-    STATE_CANCELLED,
     STATE_IDLE,
     STATE_RECEIVED,
-    STATE_TIMEOUT,
     UNIQUE_ID_CODE_BUTTON,
     UNIQUE_ID_CODE_NAME_INPUT,
     UNIQUE_ID_LEARN_BUTTON,
     UNIQUE_ID_SEND_LAST_BUTTON,
 )
+from .helpers import get_esphome_service
 from .learning import LearnedCode, LearningSession
 from .storage import OpenIRBlasterStorage
 
@@ -43,6 +42,8 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up OpenIRBlaster button entities."""
+    _LOGGER.debug("Setting up button entities for entry %s", entry.entry_id)
+
     storage: OpenIRBlasterStorage = hass.data[DOMAIN][entry.entry_id]["storage"]
     learning_session: LearningSession = hass.data[DOMAIN][entry.entry_id][
         "learning_session"
@@ -57,7 +58,19 @@ async def async_setup_entry(
     entities.append(SendLastButton(entry, learning_session))
 
     # Button for each stored code (send button + delete button)
-    for code in storage.get_codes():
+    codes = storage.get_codes()
+    _LOGGER.info(
+        "Found %d stored IR codes for entry %s",
+        len(codes),
+        entry.entry_id,
+    )
+
+    for code in codes:
+        _LOGGER.debug(
+            "Creating button for code: %s (%s)",
+            code.get(ATTR_CODE_ID),
+            code.get(ATTR_CODE_NAME),
+        )
         # Send button
         entities.append(
             CodeButton(
@@ -77,6 +90,11 @@ async def async_setup_entry(
             )
         )
 
+    _LOGGER.info(
+        "Adding %d button entities for entry %s",
+        len(entities),
+        entry.entry_id,
+    )
     async_add_entities(entities)
 
 
@@ -150,7 +168,7 @@ class LearnButton(OpenIRBlasterButtonBase):
         if (not text_state or not text_state.state or
             text_state.state.strip() == "" or
             text_state.state == "unavailable" or
-            text_state.state.strip() == "Enter Code Name"):
+            text_state.state.strip() == DEFAULT_CODE_NAME_PLACEHOLDER):
             # Show error notification
             await self.hass.services.async_call(
                 "persistent_notification",
@@ -185,8 +203,15 @@ class LearnButton(OpenIRBlasterButtonBase):
 
     def _handle_learning_complete(self, state: str, code: LearnedCode | None) -> None:
         """Handle learning session state changes."""
+        _LOGGER.debug(
+            "Learning callback: state=%s, code=%s, pending_name=%s",
+            state,
+            code is not None,
+            self._pending_save_name,
+        )
         if state == STATE_RECEIVED and code and self._pending_save_name:
             # Schedule the save operation
+            _LOGGER.info("Scheduling save of learned code: %s", self._pending_save_name)
             asyncio.create_task(self._async_save_learned_code())
 
     async def _async_save_learned_code(self) -> None:
@@ -251,7 +276,7 @@ class LearnButton(OpenIRBlasterButtonBase):
                     "set_value",
                     {
                         "entity_id": text_entity_id,
-                        "value": "Enter Code Name",
+                        "value": DEFAULT_CODE_NAME_PLACEHOLDER,
                     },
                 )
 
@@ -293,10 +318,15 @@ class SendLastButton(OpenIRBlasterButtonBase):
             _LOGGER.warning("No pending code to send")
             return
 
-        # Call ESPHome send_ir_raw service
-        # Normalize device name: ESPHome uses underscores in service names
-        device_name = self._entry.data[CONF_ESPHOME_DEVICE_NAME].replace("-", "_")
-        service_name = f"{device_name}_send_ir_raw"
+        # Call ESPHome send_ir_raw service (discovered at integration load time)
+        service_name = get_esphome_service(self.hass, self._entry.entry_id)
+        if not service_name:
+            _LOGGER.error(
+                "ESPHome service not found - cannot send IR code. "
+                "Try reloading the integration if the device was renamed."
+            )
+            return
+
         try:
             await self.hass.services.async_call(
                 "esphome",
@@ -336,9 +366,16 @@ class CodeButton(OpenIRBlasterButtonBase):
 
     async def async_press(self) -> None:
         """Handle the button press."""
-        # Normalize device name: ESPHome uses underscores in service names
-        device_name = self._entry.data[CONF_ESPHOME_DEVICE_NAME].replace("-", "_")
-        service_name = f"{device_name}_send_ir_raw"
+        # Call ESPHome send_ir_raw service (discovered at integration load time)
+        service_name = get_esphome_service(self.hass, self._entry.entry_id)
+        if not service_name:
+            _LOGGER.error(
+                "ESPHome service not found - cannot send IR code %s. "
+                "Try reloading the integration if the device was renamed.",
+                self._code_id,
+            )
+            return
+
         try:
             await self.hass.services.async_call(
                 "esphome",
@@ -352,7 +389,6 @@ class CodeButton(OpenIRBlasterButtonBase):
             _LOGGER.info("Sent code %s", self._code_id)
         except Exception as err:
             _LOGGER.error("Failed to send code %s: %s", self._code_id, err)
-            # TODO: Create persistent notification for user
 
 
 class DeleteCodeButton(OpenIRBlasterButtonBase):

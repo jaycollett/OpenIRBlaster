@@ -8,6 +8,7 @@ from typing import Any
 import voluptuous as vol
 
 from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import config_validation as cv
 
 from .const import (
@@ -15,7 +16,6 @@ from .const import (
     ATTR_CODE_ID,
     ATTR_PULSES,
     CONF_DEVICE_ID,
-    CONF_ESPHOME_DEVICE_NAME,
     DOMAIN,
     SERVICE_DELETE_CODE,
     SERVICE_LEARN_START,
@@ -23,6 +23,7 @@ from .const import (
     SERVICE_SAVE_PENDING,
     SERVICE_SEND_CODE,
 )
+from .helpers import get_esphome_service
 from .learning import LearningSession
 from .storage import OpenIRBlasterStorage
 
@@ -80,8 +81,11 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         timeout = call.data.get("timeout", 30)
 
         if entry_id not in hass.data[DOMAIN]:
-            _LOGGER.error("Config entry %s not found", entry_id)
-            return
+            raise ServiceValidationError(
+                f"Config entry {entry_id} not found",
+                translation_domain=DOMAIN,
+                translation_key="config_entry_not_found",
+            )
 
         learning_session: LearningSession = hass.data[DOMAIN][entry_id][
             "learning_session"
@@ -92,7 +96,9 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         if success:
             _LOGGER.info("Learning session started for entry %s", entry_id)
         else:
-            _LOGGER.error("Failed to start learning session for entry %s", entry_id)
+            raise HomeAssistantError(
+                f"Failed to start learning session for entry {entry_id}"
+            )
 
     async def handle_send_code(call: ServiceCall) -> None:
         """Handle send_code service call."""
@@ -100,27 +106,36 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         code_id = call.data[ATTR_CODE_ID]
 
         if entry_id not in hass.data[DOMAIN]:
-            _LOGGER.error("Config entry %s not found", entry_id)
-            return
+            raise ServiceValidationError(
+                f"Config entry {entry_id} not found",
+                translation_domain=DOMAIN,
+                translation_key="config_entry_not_found",
+            )
 
         storage: OpenIRBlasterStorage = hass.data[DOMAIN][entry_id]["storage"]
-        entry = hass.data[DOMAIN][entry_id]["config_entry"]
 
         # Get code from storage or use overrides
         code = storage.get_code(code_id)
         if code is None and (
             ATTR_CARRIER_HZ not in call.data or ATTR_PULSES not in call.data
         ):
-            _LOGGER.error("Code %s not found and no override provided", code_id)
-            return
+            raise ServiceValidationError(
+                f"Code {code_id} not found and no override provided",
+                translation_domain=DOMAIN,
+                translation_key="code_not_found",
+            )
 
         carrier_hz = call.data.get(ATTR_CARRIER_HZ, code.get(ATTR_CARRIER_HZ) if code else None)
         pulses = call.data.get(ATTR_PULSES, code.get(ATTR_PULSES) if code else None)
 
-        # Call ESPHome service
-        # Normalize device name: ESPHome uses underscores in service names
-        device_name = entry.data[CONF_ESPHOME_DEVICE_NAME].replace("-", "_")
-        service_name = f"{device_name}_send_ir_raw"
+        # Call ESPHome service (discovered at integration load time)
+        service_name = get_esphome_service(hass, entry_id)
+        if not service_name:
+            raise HomeAssistantError(
+                f"ESPHome service not found - cannot send IR code {code_id}. "
+                "Try reloading the integration if the device was renamed."
+            )
+
         try:
             await hass.services.async_call(
                 "esphome",
@@ -133,7 +148,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             )
             _LOGGER.info("Sent code %s", code_id)
         except Exception as err:
-            _LOGGER.error("Failed to send code %s: %s", code_id, err)
+            raise HomeAssistantError(f"Failed to send code {code_id}: {err}") from err
 
     async def handle_delete_code(call: ServiceCall) -> None:
         """Handle delete_code service call."""
@@ -151,12 +166,18 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                     break
 
         if not entry_id:
-            _LOGGER.error("Could not find code %s in any OpenIRBlaster device", code_id)
-            return
+            raise ServiceValidationError(
+                f"Could not find code {code_id} in any OpenIRBlaster device",
+                translation_domain=DOMAIN,
+                translation_key="code_not_found",
+            )
 
         if entry_id not in hass.data[DOMAIN]:
-            _LOGGER.error("Config entry %s not found", entry_id)
-            return
+            raise ServiceValidationError(
+                f"Config entry {entry_id} not found",
+                translation_domain=DOMAIN,
+                translation_key="config_entry_not_found",
+            )
 
         storage: OpenIRBlasterStorage = hass.data[DOMAIN][entry_id]["storage"]
         success = await storage.async_delete_code(code_id)
@@ -166,7 +187,11 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             # Reload entry to remove button entity
             await hass.config_entries.async_reload(entry_id)
         else:
-            _LOGGER.error("Failed to delete code %s", code_id)
+            raise ServiceValidationError(
+                f"Code {code_id} not found in storage",
+                translation_domain=DOMAIN,
+                translation_key="code_not_found",
+            )
 
     async def handle_rename_code(call: ServiceCall) -> None:
         """Handle rename_code service call."""
@@ -175,8 +200,11 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         new_name = call.data["new_name"]
 
         if entry_id not in hass.data[DOMAIN]:
-            _LOGGER.error("Config entry %s not found", entry_id)
-            return
+            raise ServiceValidationError(
+                f"Config entry {entry_id} not found",
+                translation_domain=DOMAIN,
+                translation_key="config_entry_not_found",
+            )
 
         storage: OpenIRBlasterStorage = hass.data[DOMAIN][entry_id]["storage"]
         code = await storage.async_update_code(code_id, name=new_name)
@@ -186,7 +214,11 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             # Reload entry to update button entity name
             await hass.config_entries.async_reload(entry_id)
         else:
-            _LOGGER.error("Failed to rename code %s", code_id)
+            raise ServiceValidationError(
+                f"Code {code_id} not found",
+                translation_domain=DOMAIN,
+                translation_key="code_not_found",
+            )
 
     async def handle_save_pending(call: ServiceCall) -> None:
         """Handle save_pending service call - saves the pending learned code."""
@@ -196,16 +228,22 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         notes = call.data.get("notes", "")
 
         if entry_id not in hass.data[DOMAIN]:
-            _LOGGER.error("Config entry %s not found", entry_id)
-            return
+            raise ServiceValidationError(
+                f"Config entry {entry_id} not found",
+                translation_domain=DOMAIN,
+                translation_key="config_entry_not_found",
+            )
 
         learning_session: LearningSession = hass.data[DOMAIN][entry_id]["learning_session"]
         storage: OpenIRBlasterStorage = hass.data[DOMAIN][entry_id]["storage"]
 
         # Check if there's a pending code
         if not learning_session.pending_code:
-            _LOGGER.error("No pending code to save")
-            return
+            raise ServiceValidationError(
+                "No pending code to save. Learn a code first.",
+                translation_domain=DOMAIN,
+                translation_key="no_pending_code",
+            )
 
         # Parse tags
         tags = [tag.strip() for tag in tags_str.split(",") if tag.strip()]
