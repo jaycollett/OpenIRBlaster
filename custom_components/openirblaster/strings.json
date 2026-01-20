@@ -16,17 +16,6 @@
       "cannot_connect": "Failed to connect to the device",
       "unknown": "Unexpected error occurred"
     },
-    "exceptions": {
-      "config_entry_not_found": {
-        "message": "Config entry not found. The OpenIRBlaster device may have been removed."
-      },
-      "code_not_found": {
-        "message": "IR code not found. It may have been deleted."
-      },
-      "no_pending_code": {
-        "message": "No pending code to save. Learn a code first by pressing the Learn button."
-      }
-    },
     "abort": {
       "already_configured": "This device is already configured",
       "no_devices_found": "No OpenIRBlaster devices found. Please ensure:\n1. Your ESPHome device is online and connected\n2. The device uses firmware version 0.1.2 or later\n3. The firmware includes project name 'jaycollett.openirblaster'"
