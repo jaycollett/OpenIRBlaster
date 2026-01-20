@@ -14,6 +14,8 @@ from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers import device_registry as dr, entity_registry as er, selector
 
 from .const import (
+    ATTR_CODE_ID,
+    ATTR_CODE_NAME,
     CONF_DEVICE_ID,
     CONF_ESPHOME_DEVICE_NAME,
     CONF_ESPHOME_SERVICE_NAME,
@@ -279,6 +281,8 @@ class OpenIRBlasterOptionsFlow(config_entries.OptionsFlow):
     def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
         """Initialize options flow."""
         self.config_entry = config_entry
+        self._selected_code_id: str | None = None
+        self._selected_code_name: str | None = None
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
@@ -358,8 +362,85 @@ class OpenIRBlasterOptionsFlow(config_entries.OptionsFlow):
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
         """Manage stored codes."""
-        # Placeholder for future code management UI
-        return self.async_abort(reason="not_implemented")
+        entry_id = self.config_entry.entry_id
+        storage = self.hass.data[DOMAIN][entry_id]["storage"]
+
+        codes = storage.get_codes()
+        if not codes:
+            return self.async_abort(reason="no_codes")
+
+        if user_input is not None:
+            code_id = user_input["code"]
+            code_name = None
+            for code in codes:
+                if code.get(ATTR_CODE_ID) == code_id:
+                    code_name = code.get(ATTR_CODE_NAME)
+                    break
+
+            self._selected_code_id = code_id
+            self._selected_code_name = code_name or code_id
+            return await self.async_step_confirm_delete()
+
+        options = [
+            {
+                "label": f"{code.get(ATTR_CODE_NAME)} ({code.get(ATTR_CODE_ID)})",
+                "value": code.get(ATTR_CODE_ID),
+            }
+            for code in codes
+        ]
+
+        data_schema = vol.Schema(
+            {
+                vol.Required("code"): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=options,
+                        mode=selector.SelectSelectorMode.DROPDOWN,
+                    )
+                )
+            }
+        )
+
+        return self.async_show_form(
+            step_id="manage_codes",
+            data_schema=data_schema,
+        )
+
+    async def async_step_confirm_delete(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Confirm deletion of a selected code."""
+        errors: dict[str, str] = {}
+        entry_id = self.config_entry.entry_id
+        storage = self.hass.data[DOMAIN][entry_id]["storage"]
+
+        if not self._selected_code_id:
+            return await self.async_step_manage_codes()
+
+        if user_input is not None:
+            if not user_input.get("confirm", False):
+                return await self.async_step_init()
+
+            success = await storage.async_delete_code(self._selected_code_id)
+            if not success:
+                errors["base"] = "code_not_found"
+            else:
+                await self.hass.config_entries.async_reload(entry_id)
+                return self.async_create_entry(title="", data={})
+
+        data_schema = vol.Schema(
+            {
+                vol.Required("confirm", default=False): bool,
+            }
+        )
+
+        return self.async_show_form(
+            step_id="confirm_delete",
+            data_schema=data_schema,
+            errors=errors,
+            description_placeholders={
+                "code_name": self._selected_code_name or self._selected_code_id,
+            },
+        )
 
     async def async_step_settings(
         self, user_input: dict[str, Any] | None = None
