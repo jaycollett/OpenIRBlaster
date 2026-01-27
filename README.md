@@ -42,7 +42,7 @@ Perfect for controlling TVs, AC units, fans, projectors, and other infrared-cont
 1. Download `factory_flash.bin` from [releases](https://github.com/jaycollett/OpenIRBlaster/releases)
 2. Flash using [ESPHome Web Flasher](https://web.esphome.io/) or esptool
 3. Connect to "OpenIRBlaster Setup" WiFi and configure your network
-4. The device will appear in Home Assistant automatically
+4. The device will appear in Home Assistant's ESPHome integration for adoption
 
 **Option 2: Build from Source**
 1. Copy `hardware/firmware/factory_flash.yaml` to your ESPHome dashboard
@@ -55,7 +55,13 @@ See the `hardware/` directory for circuit diagrams and detailed build instructio
 
 ### HACS (Recommended)
 
-If you don't see OpenIRBlaster in the default store yet, add this repo as a custom repository in HACS.
+1. Open HACS in your Home Assistant instance
+2. Click on **Integrations**
+3. Click the **+ Explore & Download Repositories** button
+4. Search for "OpenIRBlaster"
+5. Click **Download**
+6. Restart Home Assistant
+7. Continue to **Quick Start Guide** below to add the integration
 
 ### Manual Installation
 
@@ -72,10 +78,10 @@ If you don't see OpenIRBlaster in the default store yet, add this repo as a cust
 1. Navigate to **Settings** → **Devices & Services**
 2. Click **+ Add Integration**
 3. Search for "OpenIRBlaster"
-4. Select your ESPHome device from the dropdown
+4. Select your ESPHome OpenIRBlaster device from the dropdown (devices must already be connected via ESPHome)
 5. Click **Submit**
 
-The integration will automatically discover your ESPHome IR blaster device and set up the necessary entities.
+The integration will configure all necessary entities for learning and sending IR codes.
 
 ### 2. Learn Your First IR Code
 
@@ -192,6 +198,7 @@ Learned codes are stored in `.storage/openirblaster_{entry_id}.json` and include
 
 ### Integration won't install
 
+- Ensure your ESPHome device is already set up and adopted in the ESPHome integration
 - Verify your ESPHome device is online and connected
 - Check that the IR Learning Mode switch entity exists
 - Restart Home Assistant and try again
