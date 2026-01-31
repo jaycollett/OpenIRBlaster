@@ -1,6 +1,6 @@
-# OpenIRBlaster for Home Assistant
+# OpenIRBlaster
 
-A Home Assistant custom integration that lets you learn, store, and replay infrared remote control codes using ESPHome devices.
+An open-source universal IR receiver and transmitter designed specifically for Home Assistant and ESPHome.
 
 [![GitHub Release][releases-shield]][releases]
 [![License][license-shield]](LICENSE)
@@ -8,16 +8,23 @@ A Home Assistant custom integration that lets you learn, store, and replay infra
 
 Current release: **v1.0.1**
 
-## What Does It Do?
+## What is OpenIRBlaster?
 
-Turn any ESPHome device with an IR receiver and transmitter into a universal remote control for your smart home:
+OpenIRBlaster is a purpose-built hardware and software solution for IR control in your smart home:
 
-- **Learn** IR codes from any remote control
-- **Store** unlimited codes with custom names
-- **Replay** codes with a single button press or automation
-- **Control** all your IR devices through Home Assistant
+- **Custom PCB** — A dedicated circuit board designed around the ESP8266, featuring transistor-driven IR LEDs for excellent range and a quality IR receiver for learning codes
+- **ESPHome Firmware** — Clean, maintainable configuration that integrates seamlessly with Home Assistant
+- **HACS-Installable Integration** — A custom Home Assistant integration that dramatically simplifies IR code management. Point a remote at the device, press a button, give it a name, and the integration automatically creates a named entity you can use in automations—no YAML editing or raw hex codes required
 
-Perfect for controlling TVs, AC units, fans, projectors, and other infrared-controlled devices.
+## Key Features
+
+**Simple Code Learning:** Point any remote at the device, press a button, and the code is captured. Give it a friendly name like "Living Room TV - Power" and the integration automatically creates a corresponding Home Assistant entity.
+
+**Organized Code Management:** All your learned codes become proper Home Assistant entities, organized and ready for use in automations, scripts, dashboards, or voice assistants.
+
+**Reliable Transmission:** The transistor-driven IR LED circuit provides strong output for reliable device control, even across larger rooms. Multiple IR LEDs provide 360-degree coverage.
+
+**Both Transmit and Receive:** Learn codes from existing remotes AND send commands to your devices—all from one compact unit.
 
 ## Requirements
 
@@ -27,7 +34,7 @@ Perfect for controlling TVs, AC units, fans, projectors, and other infrared-cont
   - IR transmitter (LED + transistor)
   - OpenIRBlaster firmware installed
 
-For hardware build instructions, see the [Hardware Overview](https://github.com/jaycollett/OpenIRBlaster/wiki/Hardware-Overview) in the wiki.
+For hardware build instructions and the complete bill of materials (~$22-25 total), see the [Hardware Overview](https://github.com/jaycollett/OpenIRBlaster/wiki/Hardware-Overview) in the wiki.
 
 ## Installation
 
@@ -85,9 +92,15 @@ automation:
 
 For detailed documentation on entities, services, and advanced usage, see the [Home Assistant Integration](https://github.com/jaycollett/OpenIRBlaster/wiki/Home-Assistant-Integration) wiki page.
 
+## Compatibility
+
+OpenIRBlaster is designed as a complete end-to-end solution, but it's built with flexibility in mind. The HACS integration communicates with the device via ESPHome's native API, so technically any ESPHome-based IR device with the right services could work.
+
+**Note:** The integration identifies compatible devices by checking the ESPHome project name. It looks for devices where the firmware declares `project.name: "jaycollett.openirblaster"`. If you're building your own hardware but want to use this integration, you'll need to include that project identifier in your ESPHome YAML or fork the integration to support your own project name.
+
 ## Documentation
 
-- [Hardware Overview](https://github.com/jaycollett/OpenIRBlaster/wiki/Hardware-Overview) — Schematic, components, and build options
+- [Hardware Overview](https://github.com/jaycollett/OpenIRBlaster/wiki/Hardware-Overview) — Schematic, components, and build guide
 - [Firmware & ESPHome](https://github.com/jaycollett/OpenIRBlaster/wiki/Firmware-and-ESPHome) — Flashing and configuration
 - [Home Assistant Integration](https://github.com/jaycollett/OpenIRBlaster/wiki/Home-Assistant-Integration) — Setup, entities, services, and automation examples
 - [Troubleshooting](https://github.com/jaycollett/OpenIRBlaster/wiki/Troubleshooting) — Common issues and solutions
