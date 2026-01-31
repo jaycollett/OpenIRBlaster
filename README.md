@@ -129,7 +129,7 @@ Built for the Home Assistant community. Special thanks to:
 
 ### A Note on AI-Assisted Development
 
-The Home Assistant integration for this project was developed with assistance from [Claude Code](https://claude.ai/code), Anthropic's AI coding assistant. AI-assisted development is a powerful tool when used responsibly by engineers who understand the code being generated, validate its correctness, and take ownership of the final result. The author reviewed, tested, and takes full responsibility for all code in this repository. AI assistance accelerated development but doesn't replace engineering judgment, thorough testing, or understanding of the underlying systems.
+The Home Assistant integration for this project was developed with assistance from [Claude Code](https://claude.ai/code), Anthropic's AI coding assistant. AI-assisted development is a powerful tool when used responsibly by engineers who understand the code being generated, validate its correctness, and take ownership of the final result. I reviewed, tested, and take full responsibility for all code in this repository. AI assistance accelerated development but doesn't replace engineering judgment, thorough testing, or understanding of the underlying systems.
 
 ---
 
