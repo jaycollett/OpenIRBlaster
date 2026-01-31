@@ -96,7 +96,6 @@ For detailed documentation on entities, services, and advanced usage, see the [H
 
 Want to contribute? Check out:
 
-- [`CLAUDE.md`](CLAUDE.md) - Development guidelines and architecture
 - [`TESTING.md`](TESTING.md) - Testing instructions
 - [`hardware/`](hardware/) - Hardware design files and documentation
 
