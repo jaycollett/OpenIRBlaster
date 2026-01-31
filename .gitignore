@@ -59,3 +59,7 @@ config/
 # Local utility scripts
 view_logs.sh
 update_integration.sh
+
+# Claude Code local files
+CLAUDE.md
+.claude/
