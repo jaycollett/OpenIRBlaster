@@ -27,29 +27,7 @@ Perfect for controlling TVs, AC units, fans, projectors, and other infrared-cont
   - IR transmitter (LED + transistor)
   - OpenIRBlaster firmware installed
 
-## Hardware Setup
-
-### Recommended Hardware
-
-- **ESP8266** (ESP-12E) or **ESP32**
-- **IR Receiver**: TSOP38238 (GPIO5)
-- **IR LED**: 950nm IR LED (GPIO14)
-- **Transistor**: IRLML6344 or similar for LED driving
-
-### Firmware Installation
-
-**Option 1: Pre-built Binary (Easiest)**
-1. Download `factory_flash.bin` from [releases](https://github.com/jaycollett/OpenIRBlaster/releases)
-2. Flash using [ESPHome Web Flasher](https://web.esphome.io/) or esptool
-3. Connect to "OpenIRBlaster Setup" WiFi and configure your network
-4. The device will appear in Home Assistant's ESPHome integration for adoption
-
-**Option 2: Build from Source**
-1. Copy `hardware/firmware/factory_flash.yaml` to your ESPHome dashboard
-2. Compile and flash to your ESP device
-3. Connect to "OpenIRBlaster Setup" WiFi and configure your network
-
-See the `hardware/` directory for circuit diagrams and detailed build instructions.
+For hardware build instructions, see the [Hardware Overview](https://github.com/jaycollett/OpenIRBlaster/wiki/Hardware-Overview) in the wiki.
 
 ## Installation
 
@@ -61,7 +39,7 @@ See the `hardware/` directory for circuit diagrams and detailed build instructio
 4. Search for "OpenIRBlaster"
 5. Click **Download**
 6. Restart Home Assistant
-7. Continue to **Quick Start Guide** below to add the integration
+7. Go to **Settings** → **Devices & Services** → **Add Integration** → search "OpenIRBlaster"
 
 ### Manual Installation
 
@@ -80,8 +58,6 @@ See the `hardware/` directory for circuit diagrams and detailed build instructio
 3. Search for "OpenIRBlaster"
 4. Select your ESPHome OpenIRBlaster device from the dropdown (devices must already be connected via ESPHome)
 5. Click **Submit**
-
-The integration will configure all necessary entities for learning and sending IR codes.
 
 ### 2. Learn Your First IR Code
 
@@ -104,122 +80,17 @@ automation:
     action:
       - service: button.press
         target:
-          entity_id: button.openirblaster_64c999_tv_power
+          entity_id: button.openirblaster_tv_power
 ```
 
-### 4. Delete a Code
+For detailed documentation on entities, services, and advanced usage, see the [Home Assistant Integration](https://github.com/jaycollett/OpenIRBlaster/wiki/Home-Assistant-Integration) wiki page.
 
-1. Go to **Settings** → **Devices & Services** → **OpenIRBlaster**
-2. Click **Configure** on the device
-3. Select **Manage IR Codes**
-4. Pick a code and confirm deletion
+## Documentation
 
-## Entities Created
-
-For each OpenIRBlaster device, you'll get:
-
-### Text Input
-- **Code Name** - Enter the name for the next IR code to learn
-
-### Buttons
-- **Learn IR Code** - Start learning mode (after entering a code name)
-- **Send Last Learned** - Replay the most recently learned code
-- **{Your Code Names}** - One button for each saved code
-
-### Sensors
-- **Last Learned Code Name** - Name of the most recent code
-- **Last Learned Timestamp** - When the last code was captured
-- **Last Learned Pulse Count** - Size of the last code (for debugging)
-
-## Advanced Features
-
-### Services
-
-The integration provides services for automation and scripting:
-
-#### `openirblaster.send_code`
-Send a stored IR code programmatically.
-
-```yaml
-service: openirblaster.send_code
-data:
-  config_entry_id: "01KESZQ4GF6WSK5XBAA19N96MM"
-  code_id: "tv_power"
-```
-
-#### `openirblaster.rename_code`
-Rename a stored code.
-
-```yaml
-service: openirblaster.rename_code
-data:
-  config_entry_id: "01KESZQ4GF6WSK5XBAA19N96MM"
-  code_id: "tv_power"
-  new_name: "Living Room TV Power"
-```
-
-#### `openirblaster.delete_code`
-Delete a stored code.
-
-```yaml
-service: openirblaster.delete_code
-data:
-  config_entry_id: "01KESZQ4GF6WSK5XBAA19N96MM"
-  code_id: "tv_power"
-```
-
-### Storage
-
-Learned codes are stored in `.storage/openirblaster_{entry_id}.json` and include:
-- Display name
-- Unique ID (slugified)
-- Carrier frequency (typically 38kHz)
-- Pulse timing array
-- Timestamp
-
-## Troubleshooting
-
-### "Learning session timed out"
-
-- **Solution**: Make sure you press the Learn button first, then press your remote within 30 seconds
-- Check that your IR receiver is working (view ESPHome logs)
-- Ensure your remote is pointed directly at the receiver
-
-### "Please enter a name for the IR code"
-
-- **Solution**: Enter a code name in the "Code Name" text field before pressing Learn
-
-### Codes learned but don't transmit
-
-- Check ESPHome logs when you press the send button
-- Verify the IR LED is wired correctly (check hardware documentation)
-- Try adjusting carrier frequency if needed (most remotes use 38kHz)
-- Test with "Send Last Learned" button first
-
-### Integration won't install
-
-- Ensure your ESPHome device is already set up and adopted in the ESPHome integration
-- Verify your ESPHome device is online and connected
-- Check that the IR Learning Mode switch entity exists
-- Restart Home Assistant and try again
-
-## Example Use Cases
-
-### Universal Remote Dashboard
-
-Create a dashboard with all your IR device controls in one place.
-
-### Voice Control
-
-"Alexa, turn on the TV" → Triggers IR code via Home Assistant automation.
-
-### Scheduled Actions
-
-Automatically turn off your AC unit when you leave home or at a specific time.
-
-### Conditional Control
-
-Turn on your projector when movie time starts, turn it off when the movie ends.
+- [Hardware Overview](https://github.com/jaycollett/OpenIRBlaster/wiki/Hardware-Overview) — Schematic, components, and build options
+- [Firmware & ESPHome](https://github.com/jaycollett/OpenIRBlaster/wiki/Firmware-and-ESPHome) — Flashing and configuration
+- [Home Assistant Integration](https://github.com/jaycollett/OpenIRBlaster/wiki/Home-Assistant-Integration) — Setup, entities, services, and automation examples
+- [Troubleshooting](https://github.com/jaycollett/OpenIRBlaster/wiki/Troubleshooting) — Common issues and solutions
 
 ## Development
 
@@ -241,21 +112,10 @@ pip install -r requirements_dev.txt
 pytest
 ```
 
-## Contributing
-
-Contributions are welcome! Please:
-
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Make your changes with tests
-4. Ensure all tests pass (`pytest`)
-5. Submit a pull request
-
 ## Support
 
-- **Issues**: [Report bugs or request features](https://github.com/jaycollett/OpenIRBlaster/issues)
-- **Discussions**: [Ask questions or share ideas](https://github.com/jaycollett/OpenIRBlaster/discussions)
-- **Community**: [Home Assistant Forum](https://community.home-assistant.io/)
+- [Report bugs or request features](https://github.com/jaycollett/OpenIRBlaster/issues)
+- [Project Wiki](https://github.com/jaycollett/OpenIRBlaster/wiki)
 
 ## License
 
@@ -263,13 +123,15 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## Acknowledgments
 
-Built with ❤️ for the Home Assistant community. Special thanks to:
+Built for the Home Assistant community. Special thanks to:
 - The ESPHome project for the amazing firmware platform
 - The Home Assistant community for inspiration and support
 
----
+### A Note on AI-Assisted Development
 
-**Tip**: After learning your codes, you can organize them with Tags and Notes (stored in the JSON file) for better management.
+The Home Assistant integration for this project was developed with assistance from [Claude Code](https://claude.ai/code), Anthropic's AI coding assistant. AI-assisted development is a powerful tool when used responsibly by engineers who understand the code being generated, validate its correctness, and take ownership of the final result. The author reviewed, tested, and takes full responsibility for all code in this repository. AI assistance accelerated development but doesn't replace engineering judgment, thorough testing, or understanding of the underlying systems.
+
+---
 
 [releases-shield]: https://img.shields.io/github/release/jaycollett/OpenIRBlaster.svg
 [releases]: https://github.com/jaycollett/OpenIRBlaster/releases
