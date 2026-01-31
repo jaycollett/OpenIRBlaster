@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Documentation / Wiki
+    url: https://github.com/jaycollett/OpenIRBlaster/wiki
+    about: Check the wiki for setup guides and troubleshooting
+  - name: Discussions
+    url: https://github.com/jaycollett/OpenIRBlaster/discussions
+    about: Ask questions or share ideas in Discussions
