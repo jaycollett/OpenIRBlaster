@@ -55,3 +55,7 @@ config/
 
 # Mypy
 .mypy_cache/
+
+# Local utility scripts
+view_logs.sh
+update_integration.sh
