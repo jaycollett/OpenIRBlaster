@@ -162,3 +162,4 @@ The Home Assistant integration for this project was developed with assistance fr
 [license-shield]: https://img.shields.io/github/license/jaycollett/OpenIRBlaster.svg
 [hacs]: https://github.com/hacs/integration
 [hacsbadge]: https://img.shields.io/badge/HACS-Default-orange.svg
+
