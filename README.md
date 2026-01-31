@@ -127,7 +127,7 @@ Built for the Home Assistant community. Special thanks to:
 - The ESPHome project for the amazing firmware platform
 - The Home Assistant community for inspiration and support
 
-### A Note on AI-Assisted Development
+### Transparency Note: AI-Assisted Development
 
 The Home Assistant integration for this project was developed with assistance from [Claude Code](https://claude.ai/code), Anthropic's AI coding assistant. AI-assisted development is a powerful tool when used responsibly by engineers who understand the code being generated, validate its correctness, and take ownership of the final result. I reviewed, tested, and take full responsibility for all code in this repository. AI assistance accelerated development but doesn't replace engineering judgment, thorough testing, or understanding of the underlying systems.
 
