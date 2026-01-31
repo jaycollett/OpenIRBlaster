@@ -99,6 +99,18 @@ Want to contribute? Check out:
 - [`TESTING.md`](TESTING.md) - Testing instructions
 - [`hardware/`](hardware/) - Hardware design files and documentation
 
+### ESPHome Firmware
+
+The ESPHome firmware configuration is located at [`hardware/firmware/factory_flash.yaml`](hardware/firmware/factory_flash.yaml). To contribute firmware changes:
+
+1. Modify the YAML configuration as needed
+2. Test with your own ESPHome device before submitting a PR
+3. Ensure compatibility with the Home Assistant integration (event names, service calls, entity IDs)
+
+See the [Firmware & ESPHome](https://github.com/jaycollett/OpenIRBlaster/wiki/Firmware-and-ESPHome) wiki page for configuration details.
+
+### Home Assistant Integration
+
 ```bash
 # Setup development environment
 git clone https://github.com/jaycollett/OpenIRBlaster.git
