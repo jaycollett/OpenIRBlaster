@@ -157,7 +157,7 @@ The Home Assistant integration for this project was developed with assistance fr
 
 ---
 
-[releases-shield]: https://img.shields.io/github/release/jaycollett/OpenIRBlaster.svg
+[releases-shield]: https://img.shields.io/github/v/release/jaycollett/OpenIRBlaster
 [releases]: https://github.com/jaycollett/OpenIRBlaster/releases
 [license-shield]: https://img.shields.io/github/license/jaycollett/OpenIRBlaster.svg
 [hacs]: https://github.com/hacs/integration
