@@ -8,6 +8,8 @@ An open-source universal IR receiver and transmitter designed specifically for H
 
 Current release: **v1.0.1**
 
+📖 **[Read the full story and build guide on my blog](https://www.jaycollett.com/2026/02/openirblaster-finally-truly-simple-ir-control-for-home-assistant/)**
+
 ## What is OpenIRBlaster?
 
 OpenIRBlaster is a purpose-built hardware and software solution for IR control in your smart home:
