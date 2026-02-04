@@ -8,12 +8,15 @@ esphome:
   name: ${name}
   friendly_name: ${friendly_name}
   # name_add_mac_suffix ensures each device has a unique name (e.g., "openirblaster-64c999")
-  # This is the complete firmware - no ESPHome dashboard adoption needed.
-  # Users connect via captive portal, then HA auto-discovers the device.
   name_add_mac_suffix: true
   project:
     name: "jaycollett.openirblaster"
-    version: "0.3.0"
+    version: "0.4.0"
+
+# Allows ESPHome Device Builder to discover and adopt this device for customization
+dashboard_import:
+  package_import_url: github://jaycollett/OpenIRBlaster/hardware/firmware/factory_flash.yaml@main
+  import_full_config: true
 
 esp8266:
   board: esp12e
@@ -161,6 +164,10 @@ remote_receiver:
                     // With name_add_mac_suffix: true, App.get_name() returns
                     // the full unique device name (e.g., "openirblaster-64c999")
                     return App.get_name();
+                  mac_address: !lambda |-
+                    // MAC address provides stable device identification
+                    // even when ESPHome device name changes
+                    return WiFi.macAddress().c_str();
                   carrier_hz: !lambda |-
                     return (int) atoi("${default_carrier_hz}");
                   pulses_json: !lambda |-
