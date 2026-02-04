@@ -13,6 +13,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import (
     CONF_DEVICE_ID,
+    CONF_MAC_ADDRESS,
     DOMAIN,
     STATE_RECEIVED,
     UNIQUE_ID_LAST_LEARNED_AT,
@@ -60,9 +61,18 @@ class OpenIRBlasterSensorBase(RestoreSensor):
         self._restored_native_value = None
 
         device_id = entry.data[CONF_DEVICE_ID]
+        mac_address = entry.data.get(CONF_MAC_ADDRESS)
+
+        # Use MAC-based identifier if available (matches device registration in __init__.py)
+        if mac_address:
+            normalized_mac = mac_address.lower().replace(":", "")
+            device_identifier = normalized_mac
+        else:
+            device_identifier = device_id
+
         # Device already created in __init__.py, just reference it
         self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, device_id)},
+            identifiers={(DOMAIN, device_identifier)},
         )
 
         # Register callback for learning session state changes

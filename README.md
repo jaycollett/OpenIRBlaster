@@ -6,7 +6,7 @@ An open-source universal IR receiver and transmitter designed specifically for H
 [![License][license-shield]](LICENSE)
 [![hacs][hacsbadge]][hacs]
 
-Current release: **v1.0.1**
+Current release: **v1.0.2**
 
 📖 **[Read the full story and build guide on my blog](https://www.jaycollett.com/2026/02/openirblaster-finally-truly-simple-ir-control-for-home-assistant/)**
 

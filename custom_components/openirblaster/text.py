@@ -12,6 +12,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import (
     CONF_DEVICE_ID,
+    CONF_MAC_ADDRESS,
     DEFAULT_CODE_NAME_PLACEHOLDER,
     DOMAIN,
     UNIQUE_ID_CODE_NAME_INPUT,
@@ -26,10 +27,8 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up OpenIRBlaster text entities from a config entry."""
-    device_id = entry.data[CONF_DEVICE_ID]
-
     entities = [
-        OpenIRBlasterCodeNameText(entry, device_id),
+        OpenIRBlasterCodeNameText(entry),
     ]
 
     async_add_entities(entities)
@@ -44,13 +43,24 @@ class OpenIRBlasterCodeNameText(TextEntity):
     _attr_native_min = 0
     _attr_mode = "text"
 
-    def __init__(self, entry: ConfigEntry, device_id: str) -> None:
+    def __init__(self, entry: ConfigEntry) -> None:
         """Initialize the text entity."""
         self._entry = entry
         self._attr_unique_id = UNIQUE_ID_CODE_NAME_INPUT.format(entry_id=entry.entry_id)
+
+        device_id = entry.data[CONF_DEVICE_ID]
+        mac_address = entry.data.get(CONF_MAC_ADDRESS)
+
+        # Use MAC-based identifier if available (matches device registration in __init__.py)
+        if mac_address:
+            normalized_mac = mac_address.lower().replace(":", "")
+            base_identifier = normalized_mac
+        else:
+            base_identifier = device_id
+
         # Assign to controls device for learning/management
         self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, f"{device_id}_controls")},
+            identifiers={(DOMAIN, f"{base_identifier}_controls")},
         )
         self._attr_native_value = DEFAULT_CODE_NAME_PLACEHOLDER
 

@@ -13,6 +13,7 @@ from custom_components.openirblaster.const import (
     CONF_DEVICE_ID,
     CONF_ESPHOME_DEVICE_NAME,
     CONF_LEARNING_SWITCH_ENTITY_ID,
+    CONF_MAC_ADDRESS,
     DOMAIN,
 )
 
@@ -36,10 +37,22 @@ def mock_config_entry_data():
 
 
 @pytest.fixture
+def mock_config_entry_data_with_mac():
+    """Return mock config entry data with MAC address."""
+    return {
+        CONF_ESPHOME_DEVICE_NAME: "openirblaster_test",
+        CONF_DEVICE_ID: "openirblaster-test123",
+        CONF_LEARNING_SWITCH_ENTITY_ID: "switch.openirblaster_test_ir_learning_mode",
+        CONF_MAC_ADDRESS: "AA:BB:CC:DD:EE:FF",
+    }
+
+
+@pytest.fixture
 def mock_learned_code_data():
     """Return mock learned code event data."""
     return {
         "device_id": "openirblaster-test123",
+        "mac_address": "AA:BB:CC:DD:EE:FF",
         "carrier_hz": 38000,
         "pulses_json": "[9000,-4500,560,-560,560,-1680,560,-560]",
         "timestamp": "2026-01-12T14:30:00-05:00",

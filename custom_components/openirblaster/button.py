@@ -19,6 +19,7 @@ from .const import (
     ATTR_CODE_NAME,
     ATTR_PULSES,
     CONF_DEVICE_ID,
+    CONF_MAC_ADDRESS,
     DEFAULT_CODE_NAME_PLACEHOLDER,
     DOMAIN,
     STATE_ARMED,
@@ -104,8 +105,17 @@ class OpenIRBlasterButtonBase(ButtonEntity):
         """
         self._entry = entry
         device_id = entry.data[CONF_DEVICE_ID]
+        mac_address = entry.data.get(CONF_MAC_ADDRESS)
+
+        # Use MAC-based identifier if available (matches device registration in __init__.py)
+        if mac_address:
+            normalized_mac = mac_address.lower().replace(":", "")
+            base_identifier = normalized_mac
+        else:
+            base_identifier = device_id
+
         # Reference either main device or controls device
-        device_identifier = f"{device_id}_controls" if use_controls_device else device_id
+        device_identifier = f"{base_identifier}_controls" if use_controls_device else base_identifier
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, device_identifier)},
         )

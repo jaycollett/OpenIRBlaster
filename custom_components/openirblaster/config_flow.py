@@ -20,6 +20,7 @@ from .const import (
     CONF_ESPHOME_DEVICE_NAME,
     CONF_ESPHOME_SERVICE_NAME,
     CONF_LEARNING_SWITCH_ENTITY_ID,
+    CONF_MAC_ADDRESS,
     DOMAIN,
     STATE_RECEIVED,
     UNIQUE_ID_CODE_BUTTON,
@@ -34,15 +35,20 @@ class OpenIRBlasterConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     VERSION = 1
 
-    async def _get_available_openirblaster_devices(self) -> list[dict[str, str]]:
+    async def _get_available_openirblaster_devices(self) -> list[dict[str, Any]]:
         """Get list of available OpenIRBlaster devices not yet configured.
 
-        Returns list of dicts with keys: 'label' (display name), 'value' (device_id)
+        Returns list of dicts with keys:
+          - 'label': display name
+          - 'value': device_id (for dropdown selection)
+          - 'mac_address': MAC address if available (for unique_id)
+          - 'ha_device': the HA device registry entry
         """
         device_registry = dr.async_get(self.hass)
+        entity_registry = er.async_get(self.hass)
 
-        # Get existing configured device IDs
-        existing_device_ids = {
+        # Get existing configured unique_ids (could be device_id or MAC-based)
+        existing_unique_ids = {
             entry.unique_id for entry in self._async_current_entries()
         }
 
@@ -75,12 +81,45 @@ class OpenIRBlasterConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             device_id = base_device_name
             _LOGGER.debug("Found device with device_id: %s", device_id)
 
-            if not device_id or device_id in existing_device_ids:
+            # Try to get MAC address from the device's MAC Address sensor
+            # Note: ESPHome wifi_info mac_address appears as "sensor" domain in HA
+            mac_address = None
+            for entity in er.async_entries_for_device(entity_registry, device.id):
+                # ESPHome wifi_info mac_address sensor has unique_id ending with mac_address
+                # and original_name "MAC Address"
+                if entity.domain in ("sensor", "text_sensor"):
+                    if (
+                        entity.unique_id and "mac_address" in entity.unique_id.lower()
+                    ) or entity.original_name == "MAC Address":
+                        # Get the sensor state
+                        state = self.hass.states.get(entity.entity_id)
+                        if state and state.state not in ("unknown", "unavailable", None, ""):
+                            mac_address = state.state
+                            _LOGGER.debug(
+                                "Found MAC address %s for device %s (entity: %s)",
+                                mac_address,
+                                device_id,
+                                entity.entity_id,
+                            )
+                        break
+
+            # Determine unique_id for duplicate checking
+            # Prefer MAC-based unique_id if available, fall back to device_id
+            if mac_address:
+                normalized_mac = mac_address.lower().replace(":", "")
+                unique_id_candidate = normalized_mac
+            else:
+                unique_id_candidate = device_id
+
+            # Skip if already configured (check both MAC-based and device_id-based)
+            if unique_id_candidate in existing_unique_ids or device_id in existing_unique_ids:
                 continue
 
             available_devices.append({
                 "label": device.name_by_user or device.name,
                 "value": device_id,
+                "mac_address": mac_address,
+                "ha_device": device,
             })
 
         return available_devices
@@ -91,47 +130,55 @@ class OpenIRBlasterConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Handle the initial step."""
         errors = {}
 
+        # Get available devices (needed for both display and processing)
+        available_devices = await self._get_available_openirblaster_devices()
+
         if user_input is not None:
             device_id = user_input["device"]  # Full device_id with MAC suffix (e.g., openirblaster-293aea)
 
-            # Find device in registry by reconstructing the device_id and matching
-            device_registry = dr.async_get(self.hass)
-            selected_device = None
-            base_device_name = None
-
-            # Search for OpenIRBlaster devices and match by constructed device_id
-            for device in device_registry.devices.values():
-                if device.manufacturer != "jaycollett" or device.model != "openirblaster":
-                    continue
-
-                # Get base name from ESPHome identifier
-                base_device_name = None
-                for identifier in device.identifiers:
-                    if identifier[0] == "esphome":
-                        base_device_name = identifier[1]
-                        break
-
-                # Fallback: get device_name from ESPHome config entry
-                if not base_device_name and device.config_entries:
-                    for config_entry_id in device.config_entries:
-                        config_entry = self.hass.config_entries.async_get_entry(config_entry_id)
-                        if config_entry and config_entry.domain == "esphome":
-                            base_device_name = config_entry.data.get("device_name")
-                            break
-
-                if not base_device_name:
-                    continue
-
-                # With name_add_mac_suffix: true, ESPHome name already includes MAC suffix
-                if base_device_name == device_id:
-                    selected_device = device
+            # Find the selected device from our available_devices list
+            selected_device_info = None
+            for dev_info in available_devices:
+                if dev_info["value"] == device_id:
+                    selected_device_info = dev_info
                     break
 
-            if not selected_device:
+            if not selected_device_info:
+                # Fallback: search device registry directly
+                device_registry = dr.async_get(self.hass)
+                for device in device_registry.devices.values():
+                    if device.manufacturer != "jaycollett" or device.model != "openirblaster":
+                        continue
+
+                    base_device_name = None
+                    for identifier in device.identifiers:
+                        if identifier[0] == "esphome":
+                            base_device_name = identifier[1]
+                            break
+
+                    if not base_device_name and device.config_entries:
+                        for config_entry_id in device.config_entries:
+                            config_entry = self.hass.config_entries.async_get_entry(config_entry_id)
+                            if config_entry and config_entry.domain == "esphome":
+                                base_device_name = config_entry.data.get("device_name")
+                                break
+
+                    if base_device_name == device_id:
+                        selected_device_info = {
+                            "value": device_id,
+                            "mac_address": None,
+                            "ha_device": device,
+                        }
+                        break
+
+            if not selected_device_info:
                 errors["base"] = "device_not_found"
             else:
+                selected_device = selected_device_info["ha_device"]
+                mac_address = selected_device_info.get("mac_address")
+
                 # Extract base device name for ESPHome service discovery
-                device_name = base_device_name or device_id.rsplit("-", 1)[0]
+                device_name = device_id
 
                 # Find the learning switch entity using robust identification
                 # Priority: 1) unique_id match, 2) original_name match, 3) entity_id pattern
@@ -232,30 +279,56 @@ class OpenIRBlasterConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         )
 
                 if not errors:
-                    await self.async_set_unique_id(device_id)
+                    # Determine unique_id: prefer MAC address (stable), fall back to device_id
+                    if mac_address:
+                        # Normalize MAC: lowercase, no colons (e.g., "aabbccddeeff")
+                        normalized_mac = mac_address.lower().replace(":", "")
+                        unique_id = normalized_mac
+                        _LOGGER.info(
+                            "Using MAC-based unique_id %s for device %s",
+                            unique_id,
+                            device_id,
+                        )
+                    else:
+                        unique_id = device_id
+                        _LOGGER.info(
+                            "MAC address not available, using device_id as unique_id: %s",
+                            unique_id,
+                        )
+
+                    await self.async_set_unique_id(unique_id)
                     self._abort_if_unique_id_configured()
+
+                    # Build config entry data
+                    entry_data = {
+                        CONF_ESPHOME_DEVICE_NAME: device_name,
+                        CONF_DEVICE_ID: device_id,
+                        CONF_LEARNING_SWITCH_ENTITY_ID: learning_switch_entity_id,
+                        CONF_ESPHOME_SERVICE_NAME: esphome_service_name,
+                    }
+
+                    # Store MAC address if available (for event filtering and device registry)
+                    if mac_address:
+                        entry_data[CONF_MAC_ADDRESS] = mac_address
 
                     return self.async_create_entry(
                         title=f"OpenIRBlaster {device_name}",
-                        data={
-                            CONF_ESPHOME_DEVICE_NAME: device_name,
-                            CONF_DEVICE_ID: device_id,
-                            CONF_LEARNING_SWITCH_ENTITY_ID: learning_switch_entity_id,
-                            CONF_ESPHOME_SERVICE_NAME: esphome_service_name,
-                        },
+                        data=entry_data,
                     )
-
-        # Get available devices
-        available_devices = await self._get_available_openirblaster_devices()
 
         if not available_devices:
             return self.async_abort(reason="no_devices_found")
 
-        # Build schema with SelectSelector
+        # Build schema with SelectSelector (only include label/value for dropdown)
+        dropdown_options = [
+            {"label": dev["label"], "value": dev["value"]}
+            for dev in available_devices
+        ]
+
         data_schema = vol.Schema({
             vol.Required("device"): selector.SelectSelector(
                 selector.SelectSelectorConfig(
-                    options=available_devices,
+                    options=dropdown_options,
                     mode=selector.SelectSelectorMode.DROPDOWN,
                 )
             )

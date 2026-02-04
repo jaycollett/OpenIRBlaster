@@ -12,6 +12,7 @@ from homeassistant.helpers import device_registry as dr
 from .const import (
     CONF_DEVICE_ID,
     CONF_LEARNING_SWITCH_ENTITY_ID,
+    CONF_MAC_ADDRESS,
     DOMAIN,
 )
 from .helpers import discover_esphome_service
@@ -29,6 +30,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     _LOGGER.info("Setting up OpenIRBlaster integration for entry %s", entry.entry_id)
 
     device_id = entry.data[CONF_DEVICE_ID]
+    mac_address = entry.data.get(CONF_MAC_ADDRESS)
 
     # Initialize storage
     storage = OpenIRBlasterStorage(hass, entry.entry_id)
@@ -37,13 +39,32 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Update device info in storage
     await storage.async_update_device_info(device_id)
 
-    # Initialize learning session
+    # Initialize learning session with MAC address for stable event filtering
     learning_session = LearningSession(
         hass,
         entry.entry_id,
         device_id,
         entry.data[CONF_LEARNING_SWITCH_ENTITY_ID],
+        mac_address=mac_address,
     )
+
+    # Determine device identifier: prefer MAC address (stable), fall back to device_id
+    # This ensures the device registry entry stays stable even if ESPHome device name changes
+    if mac_address:
+        # Normalize MAC: lowercase, no colons (e.g., "aabbccddeeff")
+        normalized_mac = mac_address.lower().replace(":", "")
+        device_identifier = normalized_mac
+        _LOGGER.debug(
+            "Using MAC-based device identifier %s for device %s",
+            device_identifier,
+            device_id,
+        )
+    else:
+        device_identifier = device_id
+        _LOGGER.debug(
+            "MAC address not available, using device_id as identifier: %s",
+            device_identifier,
+        )
 
     # Register devices in registry
     # Device 1: Main physical device (for learned IR buttons and ESPHome sensors)
@@ -51,9 +72,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     device_registry = dr.async_get(hass)
 
     # Main physical ESPHome device
+    # Use MAC-based identifier if available for stability across ESPHome YAML changes
     device_registry.async_get_or_create(
         config_entry_id=entry.entry_id,
-        identifiers={(DOMAIN, device_id)},
+        identifiers={(DOMAIN, device_identifier)},
         name=f"OpenIRBlaster {device_id}",
         manufacturer="OpenIRBlaster",
         model="ESP8266 IR Blaster",
@@ -62,11 +84,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Virtual controls device for learning/management
     device_registry.async_get_or_create(
         config_entry_id=entry.entry_id,
-        identifiers={(DOMAIN, f"{device_id}_controls")},
+        identifiers={(DOMAIN, f"{device_identifier}_controls")},
         name=f"OpenIRBlaster {device_id} Controls",
         manufacturer="OpenIRBlaster",
         model="Learning & Management",
-        via_device=(DOMAIN, device_id),  # Shows as connected through main device
+        via_device=(DOMAIN, device_identifier),  # Shows as connected through main device
     )
 
     # Discover ESPHome service name (with runtime discovery for resilience)
@@ -125,3 +147,27 @@ async def async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Reload config entry."""
     await async_unload_entry(hass, entry)
     await async_setup_entry(hass, entry)
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Handle removal of a config entry (cleanup storage and devices)."""
+    _LOGGER.info("Removing OpenIRBlaster config entry %s", entry.entry_id)
+
+    # Delete storage file for this entry
+    storage = OpenIRBlasterStorage(hass, entry.entry_id)
+    await storage.async_delete()
+
+    # Explicitly remove device registry entries for this config entry
+    # (HA should do this automatically, but being explicit ensures cleanup)
+    device_registry = dr.async_get(hass)
+    devices_to_remove = [
+        device.id
+        for device in device_registry.devices.values()
+        if entry.entry_id in device.config_entries
+    ]
+    for device_id in devices_to_remove:
+        _LOGGER.debug("Removing device %s", device_id)
+        device_registry.async_remove_device(device_id)
+
+    _LOGGER.info("Cleanup complete for entry %s: storage deleted, %d devices removed",
+                 entry.entry_id, len(devices_to_remove))

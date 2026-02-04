@@ -13,6 +13,7 @@ from homeassistant.core import Event, HomeAssistant
 from custom_components.openirblaster.const import (
     ATTR_CARRIER_HZ,
     ATTR_DEVICE_ID,
+    ATTR_MAC_ADDRESS,
     ATTR_PULSES_JSON,
     ATTR_TIMESTAMP,
     EVENT_LEARNED,
@@ -33,6 +34,19 @@ def learning_session(hass: HomeAssistant) -> LearningSession:
         config_entry_id="test_entry",
         device_id="openirblaster-test123",
         learning_switch_entity_id="switch.openirblaster_test_ir_learning_mode",
+        timeout=5,  # Short timeout for tests
+    )
+
+
+@pytest.fixture
+def learning_session_with_mac(hass: HomeAssistant) -> LearningSession:
+    """Create a learning session fixture with MAC address."""
+    return LearningSession(
+        hass=hass,
+        config_entry_id="test_entry",
+        device_id="openirblaster-test123",
+        learning_switch_entity_id="switch.openirblaster_test_ir_learning_mode",
+        mac_address="AA:BB:CC:DD:EE:FF",
         timeout=5,  # Short timeout for tests
     )
 
@@ -282,3 +296,114 @@ async def test_cleanup(
     # Cleanup should cancel timeout and remove listener
     assert learning_session._timeout_handle is None
     assert learning_session._event_listener is None
+
+
+async def test_handle_event_with_mac_address_match(
+    hass: HomeAssistant, learning_session_with_mac: LearningSession
+) -> None:
+    """Test that events with matching MAC address are accepted."""
+    hass.services.async_register("switch", "turn_on", AsyncMock())
+    hass.services.async_register("switch", "turn_off", AsyncMock())
+
+    await learning_session_with_mac.async_start_learning()
+
+    # Create event with matching MAC address (case-insensitive)
+    event_data = {
+        ATTR_DEVICE_ID: "openirblaster-test123",
+        ATTR_MAC_ADDRESS: "aa:bb:cc:dd:ee:ff",  # lowercase version
+        ATTR_CARRIER_HZ: 38000,
+        ATTR_PULSES_JSON: "[9000,-4500,560,-560]",
+        ATTR_TIMESTAMP: "2026-01-12T14:30:00-05:00",
+    }
+
+    event = Event(EVENT_LEARNED, event_data)
+    learning_session_with_mac._async_handle_learned_event(event)
+
+    await asyncio.sleep(0.1)
+
+    assert learning_session_with_mac.state == STATE_RECEIVED
+    assert learning_session_with_mac.pending_code is not None
+
+
+async def test_handle_event_with_different_mac_but_matching_device_id(
+    hass: HomeAssistant, learning_session_with_mac: LearningSession
+) -> None:
+    """Test that events with different MAC but matching device_id are rejected when MAC is configured."""
+    hass.services.async_register("switch", "turn_on", AsyncMock())
+
+    await learning_session_with_mac.async_start_learning()
+
+    # Create event with different MAC but matching device_id
+    event_data = {
+        ATTR_DEVICE_ID: "openirblaster-test123",
+        ATTR_MAC_ADDRESS: "11:22:33:44:55:66",  # different MAC
+        ATTR_CARRIER_HZ: 38000,
+        ATTR_PULSES_JSON: "[9000,-4500,560,-560]",
+    }
+
+    event = Event(EVENT_LEARNED, event_data)
+    learning_session_with_mac._async_handle_learned_event(event)
+
+    await asyncio.sleep(0.1)
+
+    # Should remain armed because MAC doesn't match
+    assert learning_session_with_mac.state == STATE_ARMED
+    assert learning_session_with_mac.pending_code is None
+
+    await learning_session_with_mac.async_cleanup()
+
+
+async def test_handle_event_with_mac_fallback_to_device_id(
+    hass: HomeAssistant, learning_session_with_mac: LearningSession
+) -> None:
+    """Test that events without MAC address fall back to device_id matching."""
+    hass.services.async_register("switch", "turn_on", AsyncMock())
+    hass.services.async_register("switch", "turn_off", AsyncMock())
+
+    await learning_session_with_mac.async_start_learning()
+
+    # Create event without MAC address (old firmware)
+    event_data = {
+        ATTR_DEVICE_ID: "openirblaster-test123",
+        # No MAC address in event
+        ATTR_CARRIER_HZ: 38000,
+        ATTR_PULSES_JSON: "[9000,-4500,560,-560]",
+        ATTR_TIMESTAMP: "2026-01-12T14:30:00-05:00",
+    }
+
+    event = Event(EVENT_LEARNED, event_data)
+    learning_session_with_mac._async_handle_learned_event(event)
+
+    await asyncio.sleep(0.1)
+
+    # Should accept because device_id matches as fallback
+    assert learning_session_with_mac.state == STATE_RECEIVED
+    assert learning_session_with_mac.pending_code is not None
+
+
+async def test_session_without_mac_accepts_matching_device_id(
+    hass: HomeAssistant, learning_session: LearningSession
+) -> None:
+    """Test that session without MAC configured accepts events by device_id."""
+    hass.services.async_register("switch", "turn_on", AsyncMock())
+    hass.services.async_register("switch", "turn_off", AsyncMock())
+
+    await learning_session.async_start_learning()
+
+    # Create event with MAC address (from new firmware) but session has no MAC
+    event_data = {
+        ATTR_DEVICE_ID: "openirblaster-test123",
+        ATTR_MAC_ADDRESS: "aa:bb:cc:dd:ee:ff",
+        ATTR_CARRIER_HZ: 38000,
+        ATTR_PULSES_JSON: "[9000,-4500,560,-560]",
+        ATTR_TIMESTAMP: "2026-01-12T14:30:00-05:00",
+    }
+
+    event = Event(EVENT_LEARNED, event_data)
+    learning_session._async_handle_learned_event(event)
+
+    await asyncio.sleep(0.1)
+
+    # Should accept because device_id matches
+    assert learning_session.state == STATE_RECEIVED
+    assert learning_session.pending_code is not None

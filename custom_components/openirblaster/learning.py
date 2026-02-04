@@ -16,11 +16,13 @@ from homeassistant.helpers import event as ha_event
 from .const import (
     ATTR_CARRIER_HZ,
     ATTR_DEVICE_ID,
+    ATTR_MAC_ADDRESS,
     ATTR_PULSES,
     ATTR_PULSES_JSON,
     ATTR_TIMESTAMP,
     CONF_DEVICE_ID,
     CONF_LEARNING_SWITCH_ENTITY_ID,
+    CONF_MAC_ADDRESS,
     EVENT_LEARNED,
     LEARNING_TIMEOUT_SECONDS,
     MAX_PULSE_ARRAY_LENGTH,
@@ -53,12 +55,24 @@ class LearningSession:
         config_entry_id: str,
         device_id: str,
         learning_switch_entity_id: str,
+        mac_address: str | None = None,
         timeout: int = LEARNING_TIMEOUT_SECONDS,
     ) -> None:
-        """Initialize learning session."""
+        """Initialize learning session.
+
+        Args:
+            hass: Home Assistant instance
+            config_entry_id: The config entry ID
+            device_id: ESPHome device name (e.g., "openirblaster-293aea")
+            learning_switch_entity_id: Entity ID of the learning mode switch
+            mac_address: Optional MAC address for stable device identification.
+                If provided, events are filtered by MAC address first, then device_id.
+            timeout: Learning timeout in seconds
+        """
         self.hass = hass
         self.config_entry_id = config_entry_id
         self.device_id = device_id
+        self.mac_address = mac_address
         self.learning_switch_entity_id = learning_switch_entity_id
         self.timeout = timeout
 
@@ -148,24 +162,64 @@ class LearningSession:
         """Handle learned event from ESPHome device."""
         data = event.data
         _LOGGER.debug(
-            "Received learned event with data: %s (session device_id: %s, state: %s)",
+            "Received learned event with data: %s (session device_id: %s, mac: %s, state: %s)",
             data,
             self.device_id,
+            self.mac_address,
             self._state,
         )
 
-        # Filter by device_id - must be exact match
-        # Both firmware and config entry should use format: "openirblaster-293aea" (name + MAC suffix)
+        # Filter by MAC address (preferred, stable) or device_id (fallback)
+        # MAC address matching is case-insensitive
         event_device_id = data.get(ATTR_DEVICE_ID, "")
-        if event_device_id != self.device_id:
+        event_mac_address = data.get(ATTR_MAC_ADDRESS, "")
+
+        is_our_device = False
+
+        # Priority 1: Match by MAC address if both sides have it
+        if self.mac_address and event_mac_address:
+            # Normalize both to lowercase for comparison
+            if event_mac_address.lower() == self.mac_address.lower():
+                is_our_device = True
+                _LOGGER.debug(
+                    "Event matched by MAC address: %s",
+                    event_mac_address,
+                )
+            else:
+                _LOGGER.debug(
+                    "Event MAC %s does not match session MAC %s",
+                    event_mac_address,
+                    self.mac_address,
+                )
+
+        # Priority 2: Fall back to device_id matching
+        if not is_our_device:
+            if event_device_id == self.device_id:
+                is_our_device = True
+                _LOGGER.debug(
+                    "Event matched by device_id: %s",
+                    event_device_id,
+                )
+            else:
+                _LOGGER.debug(
+                    "Event device_id %s does not match session device_id %s",
+                    event_device_id,
+                    self.device_id,
+                )
+
+        if not is_our_device:
             _LOGGER.debug(
-                "Ignoring event from different device: %s (expected %s)",
+                "Ignoring event from different device (event device_id: %s, mac: %s)",
                 event_device_id,
-                self.device_id,
+                event_mac_address,
             )
             return
 
-        _LOGGER.info("Received IR code from device %s", event_device_id)
+        _LOGGER.info(
+            "Received IR code from device %s (MAC: %s)",
+            event_device_id,
+            event_mac_address or "unknown",
+        )
 
         if self._state != STATE_ARMED:
             _LOGGER.warning(

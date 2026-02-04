@@ -7,6 +7,7 @@ CONF_LEARNING_SWITCH_ENTITY_ID = "learning_switch_entity_id"
 CONF_DEVICE_ID = "device_id"
 CONF_ESPHOME_DEVICE_NAME = "esphome_device_name"
 CONF_ESPHOME_SERVICE_NAME = "esphome_service_name"  # The actual ESPHome service name (e.g., "openirblaster_send_ir_raw")
+CONF_MAC_ADDRESS = "mac_address"  # Stable device identifier (e.g., "aa:bb:cc:dd:ee:ff")
 
 # Default entity patterns
 DEFAULT_LEARNING_SWITCH_PATTERN = "switch.{device}_ir_learning_mode"
@@ -44,6 +45,7 @@ SERVICE_SAVE_PENDING = "save_pending"
 
 # Attributes for learned event payload
 ATTR_DEVICE_ID = "device_id"
+ATTR_MAC_ADDRESS = "mac_address"  # Stable device identifier in event payload
 ATTR_CARRIER_HZ = "carrier_hz"
 ATTR_PULSES = "pulses"
 ATTR_PULSES_JSON = "pulses_json"  # Firmware sends JSON string, not array
