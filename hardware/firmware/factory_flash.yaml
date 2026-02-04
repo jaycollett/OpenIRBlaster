@@ -15,7 +15,7 @@ esphome:
 
 # Allows ESPHome Device Builder to discover and adopt this device for customization
 dashboard_import:
-  package_import_url: github://jaycollett/OpenIRBlaster/hardware/firmware/factory_flash.yaml@main
+  package_import_url: github://jaycollett/OpenIRBlaster/hardware/firmware/factory_flash.yaml@master
   import_full_config: true
 
 esp8266:
