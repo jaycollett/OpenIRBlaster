@@ -35,7 +35,7 @@ async def async_setup_entry(
         "learning_session"
     ]
 
-    entities: list[SensorEntity] = [
+    entities: list[RestoreSensor] = [
         LastLearnedNameSensor(entry, learning_session),
         LastLearnedTimestampSensor(entry, learning_session),
         LastLearnedLengthSensor(entry, learning_session),

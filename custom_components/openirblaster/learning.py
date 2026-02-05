@@ -8,10 +8,7 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
-
 from homeassistant.core import Event, HomeAssistant, callback
-from homeassistant.helpers import event as ha_event
 
 from .const import (
     ATTR_CARRIER_HZ,
@@ -20,9 +17,6 @@ from .const import (
     ATTR_PULSES,
     ATTR_PULSES_JSON,
     ATTR_TIMESTAMP,
-    CONF_DEVICE_ID,
-    CONF_LEARNING_SWITCH_ENTITY_ID,
-    CONF_MAC_ADDRESS,
     EVENT_LEARNED,
     LEARNING_TIMEOUT_SECONDS,
     MAX_PULSE_ARRAY_LENGTH,
@@ -175,9 +169,11 @@ class LearningSession:
         event_mac_address = data.get(ATTR_MAC_ADDRESS, "")
 
         is_our_device = False
+        mac_comparison_done = False
 
         # Priority 1: Match by MAC address if both sides have it
         if self.mac_address and event_mac_address:
+            mac_comparison_done = True
             # Normalize both to lowercase for comparison
             if event_mac_address.lower() == self.mac_address.lower():
                 is_our_device = True
@@ -187,13 +183,14 @@ class LearningSession:
                 )
             else:
                 _LOGGER.debug(
-                    "Event MAC %s does not match session MAC %s",
+                    "Event MAC %s does not match session MAC %s - rejecting",
                     event_mac_address,
                     self.mac_address,
                 )
 
-        # Priority 2: Fall back to device_id matching
-        if not is_our_device:
+        # Priority 2: Fall back to device_id matching only if MAC comparison wasn't done
+        # (i.e., either session or event doesn't have MAC address)
+        if not is_our_device and not mac_comparison_done:
             if event_device_id == self.device_id:
                 is_our_device = True
                 _LOGGER.debug(

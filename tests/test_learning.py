@@ -224,8 +224,9 @@ async def test_clear_pending(
     assert learning_session.state == STATE_RECEIVED
     assert learning_session.pending_code is not None
 
-    # Clear pending
+    # Clear pending (async operation, need to wait)
     learning_session.clear_pending()
+    await asyncio.sleep(0.1)  # Wait for async task to complete
     assert learning_session.state == STATE_IDLE
     assert learning_session.pending_code is None
 

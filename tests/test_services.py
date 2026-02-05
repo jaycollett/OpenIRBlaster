@@ -65,6 +65,16 @@ async def test_send_code_service(
     hass: HomeAssistant, mock_config_entry_data: dict, mock_stored_code: dict
 ) -> None:
     """Test send_code service."""
+    # Register ESPHome service BEFORE integration setup (so discovery finds it)
+    esphome_calls = []
+
+    async def mock_esphome_service(call):
+        esphome_calls.append(call)
+
+    hass.services.async_register(
+        "esphome", "openirblaster_test_send_ir_raw", mock_esphome_service
+    )
+
     entry = MockConfigEntry(domain=DOMAIN, data=mock_config_entry_data)
     entry.add_to_hass(hass)
 
@@ -81,16 +91,6 @@ async def test_send_code_service(
         name="Test Code",
         carrier_hz=38000,
         pulses=[9000, -4500],
-    )
-
-    # Register ESPHome service
-    esphome_calls = []
-
-    async def mock_esphome_service(call):
-        esphome_calls.append(call)
-
-    hass.services.async_register(
-        "esphome", "openirblaster_test_send_ir_raw", mock_esphome_service
     )
 
     await hass.services.async_call(

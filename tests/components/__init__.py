@@ -1,0 +1,1 @@
+"""Mock components for testing."""
