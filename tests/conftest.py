@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Generator
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -26,23 +26,80 @@ def auto_enable_custom_integrations(enable_custom_integrations):
     yield
 
 
+@pytest.fixture(autouse=True)
+async def setup_esphome_integration(hass: HomeAssistant):
+    """Set up a mock ESPHome integration to satisfy dependencies.
+
+    Patches the loader and setup to handle esphome as a mock integration.
+    Also registers mock services that the integration may call.
+    """
+    from homeassistant import loader, setup
+    from homeassistant.loader import Integration
+
+    # Mark esphome as loaded
+    hass.config.components.add("esphome")
+
+    # Register mock persistent_notification services (used by learning.py)
+    hass.services.async_register(
+        "persistent_notification", "create", AsyncMock()
+    )
+    hass.services.async_register(
+        "persistent_notification", "dismiss", AsyncMock()
+    )
+
+    # Store original function
+    original_async_get_integration = loader.async_get_integration
+
+    async def patched_async_get_integration(hass, domain):
+        """Return a mock for esphome, otherwise call original."""
+        if domain == "esphome":
+            # Create a minimal mock Integration
+            mock_integration = MagicMock(spec=Integration)
+            mock_integration.domain = "esphome"
+            mock_integration.name = "ESPHome"
+            mock_integration.dependencies = []
+            mock_integration.after_dependencies = []
+            mock_integration.requirements = []
+            mock_integration.config_flow = False
+            mock_integration.platforms_are_loaded = MagicMock(return_value=True)
+            mock_integration.async_get_platforms = AsyncMock(return_value={})
+            mock_integration.async_get_component = AsyncMock(
+                return_value=MagicMock(
+                    async_setup=AsyncMock(return_value=True),
+                    async_setup_entry=AsyncMock(return_value=True),
+                    DOMAIN="esphome",
+                )
+            )
+            return mock_integration
+        return await original_async_get_integration(hass, domain)
+
+    with patch.object(loader, "async_get_integration", patched_async_get_integration):
+        yield
+
+
 @pytest.fixture
 def mock_config_entry_data():
     """Return mock config entry data."""
+    from custom_components.openirblaster.const import CONF_ESPHOME_SERVICE_NAME
+
     return {
         CONF_ESPHOME_DEVICE_NAME: "openirblaster_test",
         CONF_DEVICE_ID: "openirblaster-test123",
         CONF_LEARNING_SWITCH_ENTITY_ID: "switch.openirblaster_test_ir_learning_mode",
+        CONF_ESPHOME_SERVICE_NAME: "openirblaster_test_send_ir_raw",
     }
 
 
 @pytest.fixture
 def mock_config_entry_data_with_mac():
     """Return mock config entry data with MAC address."""
+    from custom_components.openirblaster.const import CONF_ESPHOME_SERVICE_NAME
+
     return {
         CONF_ESPHOME_DEVICE_NAME: "openirblaster_test",
         CONF_DEVICE_ID: "openirblaster-test123",
         CONF_LEARNING_SWITCH_ENTITY_ID: "switch.openirblaster_test_ir_learning_mode",
+        CONF_ESPHOME_SERVICE_NAME: "openirblaster_test_send_ir_raw",
         CONF_MAC_ADDRESS: "AA:BB:CC:DD:EE:FF",
     }
 

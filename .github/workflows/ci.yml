@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [master]
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install -r requirements_dev.txt
+
+      - name: Run tests
+        run: pytest --cov=custom_components.openirblaster
+
+      - name: Run linting
+        run: ruff check custom_components/openirblaster
+
+  version-check:
+    name: Version Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check version bumped
+        run: |
+          CURRENT_VERSION=$(jq -r .version custom_components/openirblaster/manifest.json)
+          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+          LATEST_VERSION=${LATEST_TAG#v}
+
+          if [ "$CURRENT_VERSION" = "$LATEST_VERSION" ]; then
+            echo "::error::Version $CURRENT_VERSION has not been bumped from latest release $LATEST_TAG"
+            exit 1
+          fi
+          echo "Version check passed: $CURRENT_VERSION (latest: $LATEST_VERSION)"

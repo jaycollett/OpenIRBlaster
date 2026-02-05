@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
 
 import voluptuous as vol
 
@@ -15,7 +14,6 @@ from .const import (
     ATTR_CARRIER_HZ,
     ATTR_CODE_ID,
     ATTR_PULSES,
-    CONF_DEVICE_ID,
     DOMAIN,
     SERVICE_DELETE_CODE,
     SERVICE_LEARN_START,
