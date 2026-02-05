@@ -49,7 +49,7 @@ send_code:
       selector:
         number:
           min: 30000
-          max: 60000
+          max: 56000
           unit_of_measurement: Hz
     pulses:
       name: Pulses
