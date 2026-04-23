@@ -98,6 +98,14 @@ OpenIRBlaster is designed as a complete end-to-end solution, but it's built with
 
 **Note:** The integration identifies compatible devices by checking the ESPHome project name. It looks for devices where the firmware declares `project.name: "jaycollett.openirblaster"`. If you're building your own hardware but want to use this integration, you'll need to include that project identifier in your ESPHome YAML or fork the integration to support your own project name.
 
+### Third-Party Device Support
+
+Community members have successfully run OpenIRBlaster on hardware that wasn't designed for it. See [`docs/third-party-devices/`](docs/third-party-devices/) for guides:
+
+- [Tuya IR Blasters](docs/third-party-devices/tuya-ir-blasters.md) - S06, S18, and similar Tuya-branded IR repeaters
+
+If you've adapted OpenIRBlaster to a new device, [PRs adding a guide are welcome](docs/third-party-devices/README.md#contributing-a-new-device-guide).
+
 ## Documentation
 
 - [Hardware Overview](https://github.com/jaycollett/OpenIRBlaster/wiki/Hardware-Overview) - Schematic, components, and build guide
