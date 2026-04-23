@@ -33,9 +33,6 @@ STATE_TIMEOUT = "timeout"
 STORAGE_VERSION = 1
 STORAGE_KEY_PREFIX = "openirblaster_"
 
-# UI defaults
-DEFAULT_CODE_NAME_PLACEHOLDER = "Enter Code Name"
-
 # Services
 SERVICE_LEARN_START = "learn_start"
 SERVICE_SEND_CODE = "send_code"

@@ -19,7 +19,6 @@ from .const import (
     ATTR_PULSES,
     CONF_DEVICE_ID,
     CONF_MAC_ADDRESS,
-    DEFAULT_CODE_NAME_PLACEHOLDER,
     DOMAIN,
     STATE_ARMED,
     STATE_IDLE,
@@ -169,8 +168,7 @@ class LearnButton(OpenIRBlasterButtonBase):
         text_state = self.hass.states.get(text_entity_id)
         if (not text_state or not text_state.state or
             text_state.state.strip() == "" or
-            text_state.state == "unavailable" or
-            text_state.state.strip() == DEFAULT_CODE_NAME_PLACEHOLDER):
+            text_state.state == "unavailable"):
             # Show error notification
             await self.hass.services.async_call(
                 "persistent_notification",
@@ -278,7 +276,7 @@ class LearnButton(OpenIRBlasterButtonBase):
                     "set_value",
                     {
                         "entity_id": text_entity_id,
-                        "value": DEFAULT_CODE_NAME_PLACEHOLDER,
+                        "value": "",
                     },
                 )
 
