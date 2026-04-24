@@ -138,6 +138,28 @@ class LearnButton(OpenIRBlasterButtonBase):
         # Store entry for later entity ID lookup
         self._text_entity_unique_id = UNIQUE_ID_CODE_NAME_INPUT.format(entry_id=entry.entry_id)
         self._pending_save_name: str | None = None
+        # Guard against two capture notifications scheduling two concurrent
+        # save tasks (e.g. event and text_sensor paths racing, or a stray
+        # STATE_RECEIVED callback arriving while a save is already in-flight).
+        self._save_in_progress: bool = False
+
+    async def async_added_to_hass(self) -> None:
+        """Register the learning callback once, for the lifetime of the entity.
+
+        Registering on every press leaks subscriptions: if a press times out
+        or fails before reaching the save path, the old callback stays in the
+        session's list. The next press adds another, and when STATE_RECEIVED
+        eventually fires the save handler runs multiple times. Keeping a
+        single lifetime registration and gating the handler on
+        ``_pending_save_name`` / ``_save_in_progress`` avoids both problems.
+        """
+        await super().async_added_to_hass()
+        self._learning_session.register_callback(self._handle_learning_complete)
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Unregister the learning callback when the entity is removed."""
+        self._learning_session.unregister_callback(self._handle_learning_complete)
+        await super().async_will_remove_from_hass()
 
     async def async_press(self) -> None:
         """Handle the button press."""
@@ -188,31 +210,39 @@ class LearnButton(OpenIRBlasterButtonBase):
         # Store the code name for the callback
         self._pending_save_name = text_state.state.strip()
 
-        # Register callback to handle learning completion
-        self._learning_session.register_callback(self._handle_learning_complete)
-
-        # Start learning
+        # Start learning (callback is registered for entity lifetime in
+        # async_added_to_hass; nothing to register here)
         success = await self._learning_session.async_start_learning()
         if success:
             _LOGGER.info("Learning session started for code: %s", self._pending_save_name)
         else:
             _LOGGER.error("Failed to start learning session")
-            # Unregister callback if start failed
-            self._learning_session.unregister_callback(self._handle_learning_complete)
             self._pending_save_name = None
 
     def _handle_learning_complete(self, state: str, code: LearnedCode | None) -> None:
-        """Handle learning session state changes."""
+        """Handle learning session state changes.
+
+        This is registered once for the entity lifetime. It is a no-op unless
+        a press is currently in-flight (``_pending_save_name`` is set) and no
+        save task is already running. This makes the callback safe against
+        stray STATE_RECEIVED notifications and against multiple capture paths
+        (event + text_sensor fallback) both firing for the same learn cycle.
+        """
         _LOGGER.debug(
-            "Learning callback: state=%s, code=%s, pending_name=%s",
+            "Learning callback: state=%s, code=%s, pending_name=%s, save_in_progress=%s",
             state,
             code is not None,
             self._pending_save_name,
+            self._save_in_progress,
         )
-        if state == STATE_RECEIVED and code and self._pending_save_name:
-            # Schedule the save operation
-            _LOGGER.info("Scheduling save of learned code: %s", self._pending_save_name)
-            asyncio.create_task(self._async_save_learned_code())
+        if state != STATE_RECEIVED or code is None or not self._pending_save_name:
+            return
+        if self._save_in_progress:
+            _LOGGER.debug("Save already in progress, ignoring duplicate notification")
+            return
+        self._save_in_progress = True
+        _LOGGER.info("Scheduling save of learned code: %s", self._pending_save_name)
+        asyncio.create_task(self._async_save_learned_code())
 
     async def _async_save_learned_code(self) -> None:
         """Save the learned code with the pending name."""
@@ -289,9 +319,11 @@ class LearnButton(OpenIRBlasterButtonBase):
         except Exception as err:
             _LOGGER.error("Failed to save learned code: %s", err, exc_info=True)
         finally:
-            # Cleanup: unregister callback and clear pending name
-            self._learning_session.unregister_callback(self._handle_learning_complete)
+            # Release save guard and clear pending name. The callback itself
+            # is registered for the entity's lifetime (see
+            # async_added_to_hass) so we do not unregister it here.
             self._pending_save_name = None
+            self._save_in_progress = False
 
 
 class SendLastButton(OpenIRBlasterButtonBase):
