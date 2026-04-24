@@ -31,13 +31,17 @@ def _lookup_mac_from_esphome_device(
     """Locate the MAC address of an ESPHome device from the HA device registry.
 
     Returns the MAC in its original HA format (typically lowercase colon-separated)
-    if found, or ``None`` if no matching ESPHome device has a MAC connection.
+    if a single unambiguous ESPHome device matches ``device_id``; otherwise
+    returns ``None`` (caller falls back to Strategy 2 slug resolution).
 
-    The match is fuzzy by design: the ESPHome integration registers devices
-    with names/identifiers based on the ESPHome node name. We match on the
-    device name (case-insensitive) and, as a secondary check, on any
-    identifier that contains the node name. Only devices whose config entries
-    belong to the ``esphome`` integration are considered.
+    Match precedence:
+      1. Exact match on device name, name_by_user, or any identifier value
+         (case-insensitive, with underscore/hyphen normalization).
+      2. Substring match on the same fields, but only when a single candidate
+         has a MAC connection. If multiple substring candidates carry MACs,
+         we refuse to guess and return None.
+
+    Only devices owned by the ``esphome`` integration are considered.
     """
     try:
         dev_reg = dr.async_get(hass)
@@ -47,11 +51,13 @@ def _lookup_mac_from_esphome_device(
 
     device_id_lower = device_id.lower()
     normalized_device_id = device_id_lower.replace("_", "-")
-    candidates: list[dr.DeviceEntry] = []
+    targets = {device_id_lower, normalized_device_id}
+
+    exact_matches: list[dr.DeviceEntry] = []
+    substring_matches: list[dr.DeviceEntry] = []
 
     for device in dev_reg.devices.values():
-        # Restrict to devices owned by the ESPHome integration. The device's
-        # config_entries set references ConfigEntry IDs; look them up.
+        # Restrict to devices owned by the ESPHome integration.
         is_esphome = False
         for ce_id in device.config_entries:
             ce = hass.config_entries.async_get_entry(ce_id)
@@ -63,25 +69,68 @@ def _lookup_mac_from_esphome_device(
 
         name = (device.name or "").lower()
         name_by_user = (device.name_by_user or "").lower()
-        ident_match = any(
-            device_id_lower in str(ident[1]).lower()
-            or normalized_device_id in str(ident[1]).lower()
-            for ident in device.identifiers
-        )
-        if (
-            device_id_lower in name
-            or normalized_device_id in name
-            or device_id_lower in name_by_user
-            or normalized_device_id in name_by_user
-            or ident_match
-        ):
-            candidates.append(device)
+        ident_values = [str(ident[1]).lower() for ident in device.identifiers]
 
-    # Pick the first candidate with a MAC connection
-    for device in candidates:
+        # Exact match: any field equals one of the target forms.
+        if (
+            name in targets
+            or (name_by_user and name_by_user in targets)
+            or any(v in targets for v in ident_values)
+        ):
+            exact_matches.append(device)
+            continue
+
+        # Substring match: any field contains one of the target forms.
+        def _contains(haystack: str) -> bool:
+            return bool(haystack) and any(t in haystack for t in targets)
+
+        if (
+            _contains(name)
+            or _contains(name_by_user)
+            or any(_contains(v) for v in ident_values)
+        ):
+            substring_matches.append(device)
+
+    def _first_mac(device: dr.DeviceEntry) -> str | None:
         for conn_type, conn_value in device.connections:
             if conn_type == dr.CONNECTION_NETWORK_MAC and conn_value:
                 return conn_value
+        return None
+
+    # Prefer exact matches. If multiple exact matches carry MACs, refuse to
+    # guess -- log and fall through to return None.
+    exact_with_mac = [
+        (d, mac) for d in exact_matches if (mac := _first_mac(d)) is not None
+    ]
+    if len(exact_with_mac) == 1:
+        return exact_with_mac[0][1]
+    if len(exact_with_mac) > 1:
+        _LOGGER.warning(
+            "Multiple ESPHome devices exactly match '%s' and carry MAC "
+            "connections (%d candidates). Skipping MAC back-fill to avoid "
+            "assigning the wrong one.",
+            device_id,
+            len(exact_with_mac),
+        )
+        return None
+
+    # Fall back to substring matches only when unambiguous.
+    substring_with_mac = [
+        (d, mac) for d in substring_matches if (mac := _first_mac(d)) is not None
+    ]
+    if len(substring_with_mac) == 1:
+        return substring_with_mac[0][1]
+    if len(substring_with_mac) > 1:
+        _LOGGER.warning(
+            "Multiple ESPHome devices fuzzy-match '%s' and carry MAC "
+            "connections (%d candidates). Skipping MAC back-fill to avoid "
+            "assigning the wrong one. If the text_sensor fallback is "
+            "unreliable, remove and re-add the integration so the config "
+            "flow can capture the correct MAC.",
+            device_id,
+            len(substring_with_mac),
+        )
+        return None
 
     return None
 
