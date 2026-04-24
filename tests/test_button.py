@@ -5,16 +5,13 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 
 from custom_components.openirblaster.button import LearnButton
 from custom_components.openirblaster.const import (
     DOMAIN,
-    STATE_ARMED,
     STATE_IDLE,
     STATE_RECEIVED,
     STATE_TIMEOUT,

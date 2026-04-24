@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -443,6 +443,10 @@ async def test_text_sensor_fallback_captures_code(
 
     await learning_session.async_start_learning()
     assert learning_session._state_listener is not None
+    # Pin the resolved entity_id so the test doesn't silently become a no-op
+    # if the slug heuristic ever drifts and subscribes to a different entity
+    # than the one we publish state to below.
+    assert learning_session._text_sensor_entity_id == _TEXT_SENSOR_ENTITY_ID
 
     # Simulate the firmware publishing the learned payload on reconnect
     hass.states.async_set(_TEXT_SENSOR_ENTITY_ID, _GOOD_TEXT_SENSOR_PAYLOAD)
@@ -601,3 +605,161 @@ async def test_async_clear_pending_tears_down_listeners_and_timeout(
     # Second call is a no-op (idempotent) and does not raise
     await learning_session.async_clear_pending()
     assert learning_session.state == STATE_IDLE
+
+
+# ---------------------------------------------------------------------------
+# Resolver and race-guard tests (QA follow-up to issue #8)
+# ---------------------------------------------------------------------------
+
+
+async def test_resolver_strategy_1_device_registry_by_mac(
+    hass: HomeAssistant,
+) -> None:
+    """Strategy 1 finds the text_sensor via MAC even when the slug does not match.
+
+    Regression guard: the resolver must not silently depend on Strategy 2's
+    slug heuristic when a MAC is available. This test creates a device with
+    only a MAC connection and a sensor whose entity_id would *not* match the
+    Strategy 2 slug, proving Strategy 1 works independently.
+    """
+    from homeassistant.helpers import device_registry as dr, entity_registry as er
+
+    dev_reg = dr.async_get(hass)
+    ent_reg = er.async_get(hass)
+
+    # Register a fake ESPHome config entry so the device can be attached to it
+    from pytest_homeassistant_custom_component.common import MockConfigEntry
+
+    esphome_entry = MockConfigEntry(domain="esphome", data={})
+    esphome_entry.add_to_hass(hass)
+
+    # Device lives under the ESPHome integration with a MAC connection
+    ha_device = dev_reg.async_get_or_create(
+        config_entry_id=esphome_entry.entry_id,
+        connections={(dr.CONNECTION_NETWORK_MAC, "aa:bb:cc:dd:ee:ff")},
+        identifiers={("esphome", "aabbccddeeff")},
+        name="Friendly Custom Name",
+    )
+
+    # Sensor entity attached to that device, with unique_id carrying the
+    # firmware id. Crucially, the entity_id does NOT match the slug heuristic.
+    ent_reg.async_get_or_create(
+        domain="sensor",
+        platform="esphome",
+        unique_id="some-prefix-last_ir_raw_snippet",
+        suggested_object_id="custom_named_payload",
+        device_id=ha_device.id,
+    )
+
+    session = LearningSession(
+        hass=hass,
+        config_entry_id="test_entry",
+        device_id="openirblaster-customname",
+        learning_switch_entity_id="switch.x",
+        mac_address="AA:BB:CC:DD:EE:FF",  # case differs on purpose
+        timeout=5,
+    )
+
+    resolved = session._resolve_text_sensor_entity_id()
+    assert resolved == "sensor.custom_named_payload"
+
+
+async def test_resolver_returns_none_falls_back_to_event_path(
+    hass: HomeAssistant, caplog
+) -> None:
+    """When neither resolver strategy finds the text_sensor, learning still works.
+
+    The event path must remain subscribed (primary path) and the fallback
+    simply logs a warning and is skipped. This covers the graceful-
+    degradation contract documented in learning.py.
+    """
+    import logging
+
+    # No MAC, no pre-populated entity, no matching registry entry.
+    session = LearningSession(
+        hass=hass,
+        config_entry_id="test_entry",
+        device_id="openirblaster-nonexistent-xyz",
+        learning_switch_entity_id="switch.nonexistent_ir_learning_mode",
+        timeout=5,
+    )
+
+    hass.services.async_register("switch", "turn_on", AsyncMock())
+
+    caplog.set_level(
+        logging.WARNING, logger="custom_components.openirblaster.learning"
+    )
+    success = await session.async_start_learning()
+
+    try:
+        assert success is True
+        assert session._state_listener is None
+        assert session._event_listener is not None
+        assert any(
+            "Could not resolve ESPHome payload text_sensor" in rec.message
+            for rec in caplog.records
+        )
+    finally:
+        await session.async_cleanup()
+
+
+async def test_validation_failure_sets_finalized_flag_synchronously(
+    hass: HomeAssistant, learning_session: LearningSession
+) -> None:
+    """A bad text_sensor payload must set `_capture_finalized = True` synchronously.
+
+    This closes the S1/S2 race: if the flag were only flipped when the
+    scheduled `_async_cancel` task finally ran, the other capture path
+    (event or text_sensor) could slip a valid payload through the
+    `STATE_ARMED + not finalized` guard in between. The subsequent cancel
+    would then clobber a legitimately committed capture.
+
+    We assert the flag is True *before* yielding to the event loop, which
+    proves no interleaved handler can observe `_capture_finalized == False`.
+    """
+    hass.services.async_register("switch", "turn_on", AsyncMock())
+    hass.services.async_register("switch", "turn_off", AsyncMock())
+
+    hass.states.async_set(_TEXT_SENSOR_ENTITY_ID, "")
+    await learning_session.async_start_learning()
+    assert learning_session._capture_finalized is False
+
+    # Directly invoke the text_sensor handler with a bad payload. The handler
+    # is a @callback (sync), so by the time it returns, the guard must have
+    # been flipped even though _async_cancel is still a pending task.
+    bad_new_state = type(
+        "S", (), {"state": "{not valid json", "entity_id": _TEXT_SENSOR_ENTITY_ID}
+    )()
+    event = Event(
+        "state_changed",
+        {
+            "entity_id": _TEXT_SENSOR_ENTITY_ID,
+            "old_state": None,
+            "new_state": bad_new_state,
+        },
+    )
+    learning_session._async_handle_text_sensor_state(event)
+
+    # Flag is set synchronously, before any await has run the cancel task
+    assert learning_session._capture_finalized is True
+
+    # Now fire a valid event. Because the flag is already True, the event
+    # path must bail out and NOT commit the capture, even if cancel hasn't
+    # run yet.
+    valid_event = Event(
+        EVENT_LEARNED,
+        {
+            ATTR_DEVICE_ID: "openirblaster-test123",
+            ATTR_CARRIER_HZ: 38000,
+            ATTR_PULSES_JSON: "[9000,-4500,560,-560]",
+            ATTR_TIMESTAMP: "2026-01-12T14:30:00-05:00",
+        },
+    )
+    learning_session._async_handle_learned_event(valid_event)
+
+    # Drain the pending cancel task
+    await asyncio.sleep(0.1)
+
+    # No valid code committed; session cancelled, not received
+    assert learning_session.pending_code is None
+    assert learning_session.state == STATE_CANCELLED
