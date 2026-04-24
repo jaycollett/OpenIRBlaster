@@ -408,3 +408,196 @@ async def test_session_without_mac_accepts_matching_device_id(
     # Should accept because device_id matches
     assert learning_session.state == STATE_RECEIVED
     assert learning_session.pending_code is not None
+
+
+# ---------------------------------------------------------------------------
+# Text_sensor fallback path (issue #8): when the ESPHome API socket drops the
+# learned event, the text_sensor state replays on reconnect. We must capture
+# the code via that path identically to the event path.
+# ---------------------------------------------------------------------------
+
+# Matches the pattern in learning._resolve_text_sensor_entity_id:
+# sensor.{device_id slug}_last_learned_ir_payload
+_TEXT_SENSOR_ENTITY_ID = "sensor.openirblaster_test123_last_learned_ir_payload"
+
+_GOOD_TEXT_SENSOR_PAYLOAD = json.dumps(
+    {
+        "device_id": "openirblaster-test123",
+        "carrier_hz": 38000,
+        "rssi": -45,
+        "timestamp": "2026-01-12T14:30:00-05:00",
+        "pulses": [9000, -4500, 560, -560],
+    }
+)
+
+
+async def test_text_sensor_fallback_captures_code(
+    hass: HomeAssistant, learning_session: LearningSession
+) -> None:
+    """State change on the payload text_sensor captures the code when the event is lost."""
+    hass.services.async_register("switch", "turn_on", AsyncMock())
+    hass.services.async_register("switch", "turn_off", AsyncMock())
+
+    # Pre-populate the text_sensor so the resolver finds it
+    hass.states.async_set(_TEXT_SENSOR_ENTITY_ID, "")
+
+    await learning_session.async_start_learning()
+    assert learning_session._state_listener is not None
+
+    # Simulate the firmware publishing the learned payload on reconnect
+    hass.states.async_set(_TEXT_SENSOR_ENTITY_ID, _GOOD_TEXT_SENSOR_PAYLOAD)
+    await hass.async_block_till_done()
+    await asyncio.sleep(0.1)
+
+    assert learning_session.state == STATE_RECEIVED
+    assert learning_session.pending_code is not None
+    assert learning_session.pending_code.carrier_hz == 38000
+    assert learning_session.pending_code.pulses == [9000, -4500, 560, -560]
+
+
+async def test_event_first_deduplicates_text_sensor(
+    hass: HomeAssistant, learning_session: LearningSession
+) -> None:
+    """When the event arrives first, a later text_sensor state change is ignored."""
+    hass.services.async_register("switch", "turn_on", AsyncMock())
+    hass.services.async_register("switch", "turn_off", AsyncMock())
+
+    hass.states.async_set(_TEXT_SENSOR_ENTITY_ID, "")
+    await learning_session.async_start_learning()
+
+    # Event arrives first
+    event = Event(
+        EVENT_LEARNED,
+        {
+            ATTR_DEVICE_ID: "openirblaster-test123",
+            ATTR_CARRIER_HZ: 38000,
+            ATTR_PULSES_JSON: "[9000,-4500]",
+            ATTR_TIMESTAMP: "2026-01-12T14:30:00-05:00",
+        },
+    )
+    learning_session._async_handle_learned_event(event)
+    await asyncio.sleep(0.1)
+
+    assert learning_session.state == STATE_RECEIVED
+    first_pulses = list(learning_session.pending_code.pulses)
+    assert first_pulses == [9000, -4500]
+
+    # A late text_sensor payload (different pulses) must not overwrite
+    hass.states.async_set(
+        _TEXT_SENSOR_ENTITY_ID,
+        json.dumps(
+            {
+                "device_id": "openirblaster-test123",
+                "carrier_hz": 38000,
+                "pulses": [1111, -2222, 3333],
+                "timestamp": "2026-01-12T14:30:01-05:00",
+            }
+        ),
+    )
+    await hass.async_block_till_done()
+    await asyncio.sleep(0.1)
+
+    # Pending code unchanged
+    assert learning_session.pending_code.pulses == first_pulses
+
+
+async def test_text_sensor_first_deduplicates_event(
+    hass: HomeAssistant, learning_session: LearningSession
+) -> None:
+    """When the text_sensor fires first, a subsequent event is ignored."""
+    hass.services.async_register("switch", "turn_on", AsyncMock())
+    hass.services.async_register("switch", "turn_off", AsyncMock())
+
+    hass.states.async_set(_TEXT_SENSOR_ENTITY_ID, "")
+    await learning_session.async_start_learning()
+
+    # Text_sensor fires first (simulates dropped event)
+    hass.states.async_set(_TEXT_SENSOR_ENTITY_ID, _GOOD_TEXT_SENSOR_PAYLOAD)
+    await hass.async_block_till_done()
+    await asyncio.sleep(0.1)
+    assert learning_session.state == STATE_RECEIVED
+    first_pulses = list(learning_session.pending_code.pulses)
+
+    # Late event arrives with different data; must not re-trigger finalize
+    late_event = Event(
+        EVENT_LEARNED,
+        {
+            ATTR_DEVICE_ID: "openirblaster-test123",
+            ATTR_CARRIER_HZ: 40000,
+            ATTR_PULSES_JSON: "[1,2,3,4]",
+            ATTR_TIMESTAMP: "2026-01-12T14:30:02-05:00",
+        },
+    )
+    learning_session._async_handle_learned_event(late_event)
+    await asyncio.sleep(0.1)
+
+    assert learning_session.pending_code.pulses == first_pulses
+    assert learning_session.pending_code.carrier_hz == 38000
+
+
+async def test_text_sensor_invalid_json_cancels_cleanly(
+    hass: HomeAssistant, learning_session: LearningSession
+) -> None:
+    """Invalid JSON on the text_sensor should cancel the session."""
+    hass.services.async_register("switch", "turn_on", AsyncMock())
+    hass.services.async_register("switch", "turn_off", AsyncMock())
+
+    hass.states.async_set(_TEXT_SENSOR_ENTITY_ID, "")
+    await learning_session.async_start_learning()
+    assert learning_session.state == STATE_ARMED
+
+    hass.states.async_set(_TEXT_SENSOR_ENTITY_ID, "{not valid json")
+    await hass.async_block_till_done()
+    await asyncio.sleep(0.1)
+
+    assert learning_session.state == STATE_CANCELLED
+    assert learning_session.pending_code is None
+
+
+async def test_text_sensor_empty_payload_is_ignored(
+    hass: HomeAssistant, learning_session: LearningSession
+) -> None:
+    """Empty-string publishes (e.g. the 'Clear' button on the device) are noise."""
+    hass.services.async_register("switch", "turn_on", AsyncMock())
+    hass.services.async_register("switch", "turn_off", AsyncMock())
+
+    hass.states.async_set(_TEXT_SENSOR_ENTITY_ID, "seed")
+    await learning_session.async_start_learning()
+
+    # Clear the sensor -> empty state. Must not cancel or transition.
+    hass.states.async_set(_TEXT_SENSOR_ENTITY_ID, "")
+    await hass.async_block_till_done()
+    await asyncio.sleep(0.1)
+
+    assert learning_session.state == STATE_ARMED
+    assert learning_session.pending_code is None
+
+    await learning_session.async_cleanup()
+
+
+async def test_async_clear_pending_tears_down_listeners_and_timeout(
+    hass: HomeAssistant, learning_session: LearningSession
+) -> None:
+    """async_clear_pending cancels the timeout and unsubscribes both listeners."""
+    hass.services.async_register("switch", "turn_on", AsyncMock())
+    hass.services.async_register("switch", "turn_off", AsyncMock())
+
+    hass.states.async_set(_TEXT_SENSOR_ENTITY_ID, "")
+    await learning_session.async_start_learning()
+    assert learning_session._timeout_handle is not None
+    assert learning_session._event_listener is not None
+    assert learning_session._state_listener is not None
+
+    # User dismisses without reaching STATE_RECEIVED
+    await learning_session.async_clear_pending()
+
+    # All subscriptions released, safe to start again
+    assert learning_session._timeout_handle is None
+    assert learning_session._event_listener is None
+    assert learning_session._state_listener is None
+    assert learning_session.state == STATE_IDLE
+    assert learning_session.pending_code is None
+
+    # Second call is a no-op (idempotent) and does not raise
+    await learning_session.async_clear_pending()
+    assert learning_session.state == STATE_IDLE
