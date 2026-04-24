@@ -25,12 +25,100 @@ _LOGGER = logging.getLogger(__name__)
 PLATFORMS = [Platform.BUTTON, Platform.SENSOR, Platform.TEXT]
 
 
+def _lookup_mac_from_esphome_device(
+    hass: HomeAssistant, device_id: str
+) -> str | None:
+    """Locate the MAC address of an ESPHome device from the HA device registry.
+
+    Returns the MAC in its original HA format (typically lowercase colon-separated)
+    if found, or ``None`` if no matching ESPHome device has a MAC connection.
+
+    The match is fuzzy by design: the ESPHome integration registers devices
+    with names/identifiers based on the ESPHome node name. We match on the
+    device name (case-insensitive) and, as a secondary check, on any
+    identifier that contains the node name. Only devices whose config entries
+    belong to the ``esphome`` integration are considered.
+    """
+    try:
+        dev_reg = dr.async_get(hass)
+    except Exception as err:  # pragma: no cover - registry should always exist
+        _LOGGER.debug("Device registry unavailable during MAC lookup: %s", err)
+        return None
+
+    device_id_lower = device_id.lower()
+    normalized_device_id = device_id_lower.replace("_", "-")
+    candidates: list[dr.DeviceEntry] = []
+
+    for device in dev_reg.devices.values():
+        # Restrict to devices owned by the ESPHome integration. The device's
+        # config_entries set references ConfigEntry IDs; look them up.
+        is_esphome = False
+        for ce_id in device.config_entries:
+            ce = hass.config_entries.async_get_entry(ce_id)
+            if ce is not None and ce.domain == "esphome":
+                is_esphome = True
+                break
+        if not is_esphome:
+            continue
+
+        name = (device.name or "").lower()
+        name_by_user = (device.name_by_user or "").lower()
+        ident_match = any(
+            device_id_lower in str(ident[1]).lower()
+            or normalized_device_id in str(ident[1]).lower()
+            for ident in device.identifiers
+        )
+        if (
+            device_id_lower in name
+            or normalized_device_id in name
+            or device_id_lower in name_by_user
+            or normalized_device_id in name_by_user
+            or ident_match
+        ):
+            candidates.append(device)
+
+    # Pick the first candidate with a MAC connection
+    for device in candidates:
+        for conn_type, conn_value in device.connections:
+            if conn_type == dr.CONNECTION_NETWORK_MAC and conn_value:
+                return conn_value
+
+    return None
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up OpenIRBlaster from a config entry."""
     _LOGGER.info("Setting up OpenIRBlaster integration for entry %s", entry.entry_id)
 
     device_id = entry.data[CONF_DEVICE_ID]
     mac_address = entry.data.get(CONF_MAC_ADDRESS)
+
+    # Issue #8 follow-up: older config entries that predate MAC capture have
+    # no MAC recorded. That breaks the text_sensor fallback's Strategy 1
+    # (device-registry lookup by MAC) and leaves those installs with only
+    # the fragile slug-based Strategy 2. Back-fill MAC from the ESPHome
+    # device in the HA device registry so existing installs gain the robust
+    # resolver path without requiring the user to remove and re-add the
+    # integration.
+    if not mac_address:
+        backfilled_mac = _lookup_mac_from_esphome_device(hass, device_id)
+        if backfilled_mac:
+            _LOGGER.info(
+                "Back-filled MAC address %s for device %s from ESPHome device "
+                "registry entry",
+                backfilled_mac,
+                device_id,
+            )
+            new_data = {**entry.data, CONF_MAC_ADDRESS: backfilled_mac}
+            hass.config_entries.async_update_entry(entry, data=new_data)
+            mac_address = backfilled_mac
+        else:
+            _LOGGER.warning(
+                "MAC address not configured for device %s and no matching "
+                "ESPHome device found in the device registry. Text_sensor "
+                "fallback will rely on slug heuristics only.",
+                device_id,
+            )
 
     # Initialize storage
     storage = OpenIRBlasterStorage(hass, entry.entry_id)
