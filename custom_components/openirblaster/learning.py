@@ -283,6 +283,11 @@ class LearningSession:
             _LOGGER.error(
                 "Failed to parse text_sensor payload as JSON: %s", err
             )
+            # Flip the guard synchronously so the event path cannot commit a
+            # valid capture in the window between "cancel scheduled" and
+            # "cancel task runs". Once a payload has been judged invalid, no
+            # subsequent path should re-evaluate this session.
+            self._capture_finalized = True
             asyncio.create_task(
                 self._async_cancel("Invalid text_sensor payload (JSON parse)")
             )
@@ -290,6 +295,7 @@ class LearningSession:
 
         if not isinstance(data, dict):
             _LOGGER.error("Text_sensor payload is not a JSON object: %s", type(data))
+            self._capture_finalized = True
             asyncio.create_task(self._async_cancel("Invalid text_sensor payload"))
             return
 
@@ -438,6 +444,11 @@ class LearningSession:
                 pulses = json.loads(pulses_json)
             except (json.JSONDecodeError, TypeError) as err:
                 _LOGGER.error("Failed to parse pulses_json: %s", err)
+                # Flip the guard synchronously so the other capture path (if
+                # it fires between now and when _async_cancel runs) cannot
+                # commit a valid capture that would then be clobbered by the
+                # pending cancel task.
+                self._capture_finalized = True
                 asyncio.create_task(
                     self._async_cancel("Invalid pulse data format")
                 )
@@ -446,6 +457,7 @@ class LearningSession:
             pulses = pulses_raw
         else:
             _LOGGER.error("No pulses found in %s payload", source)
+            self._capture_finalized = True
             asyncio.create_task(self._async_cancel("Missing pulse data"))
             return
 
@@ -455,6 +467,7 @@ class LearningSession:
                 carrier_hz = int(carrier_hz)
             except (ValueError, TypeError):
                 _LOGGER.error("Cannot convert carrier_hz to int: %s", carrier_hz)
+                self._capture_finalized = True
                 asyncio.create_task(self._async_cancel("Invalid carrier frequency"))
                 return
 
@@ -462,11 +475,13 @@ class LearningSession:
             _LOGGER.error(
                 "Invalid carrier_hz in %s payload: %s", source, carrier_hz
             )
+            self._capture_finalized = True
             asyncio.create_task(self._async_cancel("Invalid carrier frequency"))
             return
 
         if not isinstance(pulses, list) or len(pulses) == 0:
             _LOGGER.error("Invalid or empty pulses array in %s payload", source)
+            self._capture_finalized = True
             asyncio.create_task(self._async_cancel("Invalid pulse data"))
             return
 
@@ -477,6 +492,7 @@ class LearningSession:
                 len(pulses),
                 MAX_PULSE_ARRAY_LENGTH,
             )
+            self._capture_finalized = True
             asyncio.create_task(
                 self._async_cancel(
                     f"Pulse array too large (max {MAX_PULSE_ARRAY_LENGTH})"
@@ -615,6 +631,29 @@ class LearningSession:
         except Exception as err:
             _LOGGER.error("Failed to disable learning mode: %s", err)
 
+        # Surface the cancel to the user. Validation failures (bad JSON,
+        # bogus carrier, oversized pulse array) are silent otherwise; users
+        # need a UI hint so they know the press produced garbage and that the
+        # device firmware may need attention. Uses a distinct notification_id
+        # so it doesn't collide with the "Code Learned" success notification.
+        try:
+            await self.hass.services.async_call(
+                "persistent_notification",
+                "create",
+                {
+                    "notification_id": (
+                        f"openirblaster_cancelled_{self.config_entry_id}"
+                    ),
+                    "title": "OpenIRBlaster - Learning Cancelled",
+                    "message": (
+                        f"Learning cancelled: {reason}. This usually indicates "
+                        f"a firmware issue - check the device log."
+                    ),
+                },
+            )
+        except Exception as err:
+            _LOGGER.debug("Failed to create cancel notification: %s", err)
+
         self._state = STATE_CANCELLED
         self._notify_state_change()
 
@@ -629,12 +668,23 @@ class LearningSession:
         ``CANCELLED`` / ``RECEIVED`` states and never finalized their
         listeners due to an error path.
         """
-        # Dismiss the notification
+        # Dismiss both the "code learned" success notification and the
+        # "learning cancelled" failure notification. Either may be stale and
+        # we don't want them lingering past an explicit dismissal.
         await self.hass.services.async_call(
             "persistent_notification",
             "dismiss",
             {
                 "notification_id": f"openirblaster_learned_{self.config_entry_id}",
+            },
+        )
+        await self.hass.services.async_call(
+            "persistent_notification",
+            "dismiss",
+            {
+                "notification_id": (
+                    f"openirblaster_cancelled_{self.config_entry_id}"
+                ),
             },
         )
 
