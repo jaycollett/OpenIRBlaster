@@ -34,7 +34,7 @@ OpenIRBlaster is a purpose-built hardware and software solution for IR control i
   - IR transmitter (LED + transistor)
   - OpenIRBlaster firmware installed
 
-For hardware build instructions and the complete bill of materials (~$22-25 total), see the [Hardware Overview](https://github.com/jaycollett/OpenIRBlaster/wiki/Hardware-Overview) in the wiki.
+For hardware build instructions and the complete bill of materials (~$22-25 total), see the [Hardware Overview](docs/hardware-overview.md).
 
 ## Installation
 
@@ -90,7 +90,7 @@ automation:
           entity_id: button.openirblaster_tv_power
 ```
 
-For detailed documentation on entities, services, and advanced usage, see the [Home Assistant Integration](https://github.com/jaycollett/OpenIRBlaster/wiki/Home-Assistant-Integration) wiki page.
+For detailed documentation on entities, services, and advanced usage, see the [Home Assistant Integration](docs/home-assistant-integration.md) docs.
 
 ## Compatibility
 
@@ -108,10 +108,13 @@ If you've adapted OpenIRBlaster to a new device, [PRs adding a guide are welcome
 
 ## Documentation
 
-- [Hardware Overview](https://github.com/jaycollett/OpenIRBlaster/wiki/Hardware-Overview) - Schematic, components, and build guide
-- [Firmware & ESPHome](https://github.com/jaycollett/OpenIRBlaster/wiki/Firmware-and-ESPHome) - Flashing and configuration
-- [Home Assistant Integration](https://github.com/jaycollett/OpenIRBlaster/wiki/Home-Assistant-Integration) - Setup, entities, services, and automation examples
-- [Troubleshooting](https://github.com/jaycollett/OpenIRBlaster/wiki/Troubleshooting) - Common issues and solutions
+Full documentation lives in [`docs/`](docs/README.md):
+
+- [Hardware Overview](docs/hardware-overview.md) - Schematic, components, and build guide
+- [Firmware & ESPHome](docs/firmware-and-esphome.md) - Flashing and configuration
+- [Home Assistant Integration](docs/home-assistant-integration.md) - Setup, entities, services, and automation examples
+- [Storage Format & Manual Editing](docs/storage-format.md) - On-disk schema and hand-edit procedure
+- [Troubleshooting](docs/troubleshooting.md) - Common issues and solutions
 
 ## Development
 
@@ -128,7 +131,7 @@ The ESPHome firmware configuration is located at [`hardware/firmware/factory_fla
 2. Test with your own ESPHome device before submitting a PR
 3. Ensure compatibility with the Home Assistant integration (event names, service calls, entity IDs)
 
-See the [Firmware & ESPHome](https://github.com/jaycollett/OpenIRBlaster/wiki/Firmware-and-ESPHome) wiki page for configuration details.
+See the [Firmware & ESPHome](docs/firmware-and-esphome.md) docs for configuration details.
 
 ### Home Assistant Integration
 
@@ -147,7 +150,7 @@ pytest
 ## Support
 
 - [Report bugs or request features](https://github.com/jaycollett/OpenIRBlaster/issues)
-- [Project Wiki](https://github.com/jaycollett/OpenIRBlaster/wiki)
+- [Project Documentation](docs/README.md)
 
 ## License
 
