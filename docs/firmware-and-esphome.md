@@ -54,7 +54,7 @@ esphome:
   name: ${name}
   project:
     name: "jaycollett.openirblaster"
-    version: "0.4.0"
+    version: "0.5.0"
 ```
 
 The integration filters devices where `manufacturer == "jaycollett"` and `model == "openirblaster"`. Without this, your device won't appear in the integration's device picker.
@@ -78,9 +78,9 @@ switch:
 
 This creates the entity `switch.<device>_ir_learning_mode` that the integration controls.
 
-### 3. IR Send Service
+### 3. ESPHome API Services
 
-The integration calls this service to transmit IR codes:
+The integration calls two services on the device. Both must be present:
 
 ```yaml
 api:
@@ -94,11 +94,77 @@ api:
             transmitter_id: ir_tx
             carrier_frequency: !lambda "return (float)carrier_hz;"
             code: !lambda "return code;"
+
+    - service: replay_last_ir
+      then:
+        - if:
+            condition:
+              lambda: "return !id(last_pulses_json).empty();"
+            then:
+              - homeassistant.event:
+                  event: esphome.openirblaster_learned
+                  data:
+                    # Same six fields as the learned event below, sourced
+                    # from the cached globals so a replay carries identical
+                    # data to the original capture.
+                    ...
 ```
 
-This creates the service `esphome.<device>_send_ir_raw`.
+`send_ir_raw` becomes `esphome.<device>_send_ir_raw` and is used for every IR transmission. `replay_last_ir` becomes `esphome.<device>_replay_last_ir` and is called by the integration only as a recovery path when the marker text_sensor changed but the learned event was lost on a dropped API socket.
 
-### 4. Learned Code Event
+### 4. MAC Address Sensor
+
+The integration reads the MAC address during setup for stable device identification. The `id:` is required because the on_raw lambda reads from `.state` rather than `WiFi.macAddress().c_str()`:
+
+```yaml
+text_sensor:
+  - platform: wifi_info
+    mac_address:
+      name: "MAC Address"
+      id: text_sensor_mac_address
+```
+
+Why the `id`: `WiFi.macAddress()` returns a temporary Arduino `String` whose buffer is freed at the end of the lambda's return statement. ESPHome's templating wrapper then copies a freed pointer into the protobuf field, which HA rejects as invalid UTF-8 and drops the event. Reading from a stable `std::string` member on the wifi_info text_sensor avoids that lifetime hazard.
+
+### 5. Capture Globals
+
+The on_raw handler caches the most recent capture so the `replay_last_ir` service can re-fire the event with identical data. Required globals:
+
+```yaml
+globals:
+  - id: learn_enabled
+    type: bool
+    restore_value: no
+    initial_value: "false"
+  - id: last_pulses_json
+    type: std::string
+    restore_value: no
+  - id: last_carrier_hz
+    type: int
+    restore_value: no
+    initial_value: "0"
+  - id: last_timestamp
+    type: std::string
+    restore_value: no
+  - id: last_rssi
+    type: int
+    restore_value: no
+    initial_value: "0"
+```
+
+### 6. Capture Marker Text Sensor
+
+A small text_sensor whose state is just the timestamp of the most recent learned capture. The state replays on API reconnect, so the integration can detect a dropped event by watching for state changes:
+
+```yaml
+text_sensor:
+  - platform: template
+    name: "Last IR Capture Marker"
+    id: last_ir_capture_marker
+    update_interval: never
+```
+
+### 7. Learned Code Event
 
 When an IR code is received during learning mode, the firmware must fire this Home Assistant event:
 
@@ -107,22 +173,14 @@ homeassistant.event:
   event: esphome.openirblaster_learned
   data:
     device_id: !lambda "return App.get_name();"
-    mac_address: !lambda "return WiFi.macAddress().c_str();"
-    carrier_hz: !lambda "return 38000;"
-    pulses_json: !lambda |-
-      // JSON array of pulse timings
-      std::string s = "[";
-      for (size_t i = 0; i < x.size(); i++) {
-        s += to_string((int) x[i]);
-        if (i + 1 < x.size()) s += ",";
-      }
-      s += "]";
-      return s;
-    timestamp: !lambda |-
-      auto now = id(ha_time).now();
-      if (now.is_valid()) return now.strftime("%Y-%m-%dT%H:%M:%S%z");
-      return std::string("");
+    mac_address: !lambda "return id(text_sensor_mac_address).state;"
+    carrier_hz: !lambda "return id(last_carrier_hz);"
+    pulses_json: !lambda "return id(last_pulses_json);"
+    timestamp: !lambda "return id(last_timestamp);"
+    rssi: !lambda "return id(last_rssi);"
 ```
+
+The pattern is: build the capture into globals first (in a lambda earlier in the action list), then fire the event reading from globals. Both the initial event and any `replay_last_ir` call read from the same globals, so the replay carries identical data.
 
 **Event Fields:**
 
@@ -133,19 +191,7 @@ homeassistant.event:
 | `carrier_hz` | int | Yes | IR carrier frequency (typically 38000) |
 | `pulses_json` | string | Yes | JSON array of pulse timings in microseconds |
 | `timestamp` | string | No | ISO 8601 timestamp (defaults to current time if omitted) |
-
-### 5. MAC Address Sensor
-
-The integration reads the MAC address during setup for stable device identification:
-
-```yaml
-text_sensor:
-  - platform: wifi_info
-    mac_address:
-      name: "MAC Address"
-```
-
-This is **critical** for preventing duplicate devices when ESPHome configuration changes (see below).
+| `rssi` | int | No | WiFi RSSI at capture time (diagnostic only) |
 
 ---
 
@@ -164,7 +210,7 @@ Prior to firmware v0.4.0, the integration identified devices solely by their ESP
 1. Include `mac_address` in the `esphome.openirblaster_learned` event
 2. Expose the MAC Address sensor via `wifi_info`
 
-Both are included in the factory firmware v0.4.0+.
+Both are included in the factory firmware v0.4.0+. Firmware v0.5.0 additionally adds the `replay_last_ir` service and the small capture-marker text_sensor so the integration can recover from a dropped event on a transient API disconnect.
 
 ---
 
@@ -247,6 +293,7 @@ If you want to use this integration with your own hardware project, you have two
 
 | Version | Changes |
 |---------|---------|
+| 0.5.0 | Fixed dangling-pointer in MAC address lambda. Added `replay_last_ir` service and capture-marker text_sensor for event-loss recovery |
 | 0.4.0 | Added MAC address to learned event for stable device identification |
 | 0.3.0 | Initial public release |
 

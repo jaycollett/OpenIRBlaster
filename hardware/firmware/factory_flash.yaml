@@ -11,7 +11,7 @@ esphome:
   name_add_mac_suffix: true
   project:
     name: "jaycollett.openirblaster"
-    version: "0.4.0"
+    version: "0.5.0"
 
 # Allows ESPHome Device Builder to discover and adopt this device for customization
 dashboard_import:
@@ -46,6 +46,43 @@ api:
             format: "IR transmission complete"
             level: INFO
 
+    # Re-fire the last learned IR event from cached globals. The HA
+    # integration calls this when the capture marker changes but the
+    # corresponding learned event did not arrive, which means the original
+    # event was lost on a transient API socket drop. Replay re-emits the
+    # event with identical data so the integration can finalize the
+    # capture without forcing the user to re-press the remote.
+    - service: replay_last_ir
+      then:
+        - if:
+            condition:
+              lambda: "return !id(last_pulses_json).empty();"
+            then:
+              - logger.log:
+                  format: "Replaying last learned IR event"
+                  level: INFO
+              - homeassistant.event:
+                  event: esphome.openirblaster_learned
+                  data:
+                    device_id: !lambda "return App.get_name();"
+                    # Reads the MAC from the wifi_info text_sensor's stable
+                    # .state member. If the sensor hasn't published yet (cold
+                    # boot before WiFi associates) this returns an empty
+                    # string, which the HA integration treats as "no MAC
+                    # supplied" and falls through to device_id matching.
+                    # Do NOT revert to WiFi.macAddress().c_str() here: that
+                    # is the dangling-pointer bug that the on_raw lambda
+                    # comment in this file documents.
+                    mac_address: !lambda "return id(text_sensor_mac_address).state;"
+                    carrier_hz: !lambda "return id(last_carrier_hz);"
+                    pulses_json: !lambda "return id(last_pulses_json);"
+                    timestamp: !lambda "return id(last_timestamp);"
+                    rssi: !lambda "return id(last_rssi);"
+            else:
+              - logger.log:
+                  format: "replay_last_ir called but no capture is cached"
+                  level: WARN
+
 ota:
   - platform: esphome
 
@@ -71,6 +108,25 @@ globals:
     type: bool
     restore_value: no
     initial_value: "false"
+
+  # Last captured IR data. Populated by the on_raw handler when a code is
+  # learned, and read by the replay_last_ir service. Not restored across
+  # reboots; a reboot is the user's signal that any cached capture is gone
+  # and the remote should be pressed fresh.
+  - id: last_pulses_json
+    type: std::string
+    restore_value: no
+  - id: last_carrier_hz
+    type: int
+    restore_value: no
+    initial_value: "0"
+  - id: last_timestamp
+    type: std::string
+    restore_value: no
+  - id: last_rssi
+    type: int
+    restore_value: no
+    initial_value: "0"
 
 sensor:
   - platform: uptime
@@ -107,8 +163,13 @@ button:
     name: "Clear Last Learned IR"
     on_press:
       - text_sensor.template.publish:
-          id: last_ir_raw_snippet
+          id: last_ir_capture_marker
           state: ""
+      - lambda: |-
+          id(last_pulses_json) = std::string("");
+          id(last_timestamp) = std::string("");
+          id(last_carrier_hz) = 0;
+          id(last_rssi) = 0;
 
 text_sensor:
   - platform: wifi_info
@@ -118,11 +179,16 @@ text_sensor:
       name: "Connected SSID"
     mac_address:
       name: "MAC Address"
+      id: text_sensor_mac_address
 
-  # Optional/acceptable debug channel (spec allows a compact sensor + event)
+  # Capture marker. Set to the timestamp of the most recent learned capture.
+  # Stays well under HA core's 255-char state-length limit so the state
+  # change survives the bus. The HA integration listens for changes and
+  # uses them as a signal to call replay_last_ir if the corresponding
+  # learned event did not arrive (e.g., transient API socket drop).
   - platform: template
-    name: "Last Learned IR (payload)"
-    id: last_ir_raw_snippet
+    name: "Last IR Capture Marker"
+    id: last_ir_capture_marker
     update_interval: never
 
 # IR Receiver (TSOP38238) on GPIO5
@@ -156,74 +222,59 @@ remote_receiver:
                 level: INFO
                 args:
                   - "x.size()"
-            # Preferred learned notification mechanism: fire an HA event
-            - homeassistant.event:
-                event: esphome.openirblaster_learned
-                data:
-                  device_id: !lambda |-
-                    // With name_add_mac_suffix: true, App.get_name() returns
-                    // the full unique device name (e.g., "openirblaster-64c999")
-                    return App.get_name();
-                  mac_address: !lambda |-
-                    // MAC address provides stable device identification
-                    // even when ESPHome device name changes
-                    return WiFi.macAddress().c_str();
-                  carrier_hz: !lambda |-
-                    return (int) atoi("${default_carrier_hz}");
-                  pulses_json: !lambda |-
-                    const size_t MAX_PULSES = 600;
-                    size_t n = x.size();
-                    if (n > MAX_PULSES) n = MAX_PULSES;
 
-                    std::string s;
-                    s.reserve(8 * n + 2);
-                    s += "[";
-                    for (size_t i = 0; i < n; i++) {
-                      s += to_string((int) x[i]);
-                      if (i + 1 < n) s += ",";
-                    }
-                    s += "]";
-                    return s;
-                  timestamp: !lambda |-
-                    auto now = id(ha_time).now();
-                    if (now.is_valid()) return now.strftime("%Y-%m-%dT%H:%M:%S%z");
-                    return std::string("");
-                  rssi: !lambda |-
-                    if (isnan(id(wifi_rssi).state)) return 0;
-                    return (int) id(wifi_rssi).state;
-
-            # Optional debug sensor payload (compact JSON-like string, bounded)
+            # Build the capture into globals so both the initial event and
+            # the replay_last_ir service emit identical data.
             - lambda: |-
                 const size_t MAX_PULSES = 600;
                 size_t n = x.size();
                 if (n > MAX_PULSES) n = MAX_PULSES;
 
-                std::string ts;
-                auto now = id(ha_time).now();
-                if (now.is_valid()) ts = now.strftime("%Y-%m-%dT%H:%M:%S%z");
-
-                int rssi = 0;
-                if (!isnan(id(wifi_rssi).state)) rssi = (int) id(wifi_rssi).state;
-
-                // With name_add_mac_suffix: true, App.get_name() returns the full unique name
-                std::string device_id = App.get_name();
-
-                std::string out;
-                out.reserve(2000);
-                out += "{";
-                out += "\"device_id\":\"" + device_id + "\",";
-                out += "\"carrier_hz\":" + to_string((int) atoi("${default_carrier_hz}")) + ",";
-                out += "\"rssi\":" + to_string(rssi) + ",";
-                out += "\"timestamp\":\"" + ts + "\",";
-                out += "\"pulses\":[";
+                std::string s;
+                s.reserve(8 * n + 2);
+                s += "[";
                 for (size_t i = 0; i < n; i++) {
-                  out += to_string((int) x[i]);
-                  if (i + 1 < n) out += ",";
+                  s += to_string((int) x[i]);
+                  if (i + 1 < n) s += ",";
                 }
-                out += "]";
-                if (x.size() > MAX_PULSES) out += ",\"truncated\":true";
-                out += "}";
-                id(last_ir_raw_snippet).publish_state(out);
+                s += "]";
+                id(last_pulses_json) = s;
+
+                id(last_carrier_hz) = (int) atoi("${default_carrier_hz}");
+
+                auto now = id(ha_time).now();
+                if (now.is_valid()) {
+                  id(last_timestamp) = now.strftime("%Y-%m-%dT%H:%M:%S%z");
+                } else {
+                  id(last_timestamp) = std::string("");
+                }
+
+                if (isnan(id(wifi_rssi).state)) {
+                  id(last_rssi) = 0;
+                } else {
+                  id(last_rssi) = (int) id(wifi_rssi).state;
+                }
+
+            # Primary delivery path: fire the learned event using the cached
+            # globals. Lambdas read from globals (stable std::string members
+            # and ints), so no dangling-pointer hazards.
+            - homeassistant.event:
+                event: esphome.openirblaster_learned
+                data:
+                  device_id: !lambda "return App.get_name();"
+                  mac_address: !lambda "return id(text_sensor_mac_address).state;"
+                  carrier_hz: !lambda "return id(last_carrier_hz);"
+                  pulses_json: !lambda "return id(last_pulses_json);"
+                  timestamp: !lambda "return id(last_timestamp);"
+                  rssi: !lambda "return id(last_rssi);"
+
+            # Fallback signal: publish a small marker the HA integration can
+            # observe. State replays on API reconnect, so if the event above
+            # was lost on a transient socket drop the integration can ask
+            # the device to replay it via the replay_last_ir service.
+            - text_sensor.template.publish:
+                id: last_ir_capture_marker
+                state: !lambda "return id(last_timestamp);"
 
             - switch.turn_off: ir_learning_mode
 

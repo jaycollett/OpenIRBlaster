@@ -410,173 +410,312 @@ async def test_session_without_mac_accepts_matching_device_id(
     assert learning_session.pending_code is not None
 
 
+@pytest.mark.parametrize(
+    "bad_mac",
+    [
+        "e\x0f",                 # 2-byte garbage from real bug report
+        "\x90\x0e",              # high-byte garbage that fails UTF-8 at the wire
+        "AA:BB:CC:DD:EE",        # missing one octet
+        "AA-BB-CC-DD-EE-FF",     # wrong separator
+        "ZZ:BB:CC:DD:EE:FF",     # non-hex chars
+        "aabbccddeeff",          # no separators
+    ],
+)
+async def test_malformed_event_mac_falls_back_to_device_id(
+    hass: HomeAssistant, learning_session_with_mac: LearningSession, bad_mac: str
+) -> None:
+    """Test that a malformed event MAC is ignored and device_id matching takes over.
+
+    Older firmware versions returned a dangling-pointer c_str() in the on_raw
+    lambda, which produced garbage in the event's mac_address field. The
+    session should treat that as if no MAC was supplied and accept the event
+    if the device_id still matches.
+    """
+    hass.services.async_register("switch", "turn_on", AsyncMock())
+    hass.services.async_register("switch", "turn_off", AsyncMock())
+
+    await learning_session_with_mac.async_start_learning()
+
+    event_data = {
+        ATTR_DEVICE_ID: "openirblaster-test123",
+        ATTR_MAC_ADDRESS: bad_mac,
+        ATTR_CARRIER_HZ: 38000,
+        ATTR_PULSES_JSON: "[9000,-4500,560,-560]",
+        ATTR_TIMESTAMP: "2026-01-12T14:30:00-05:00",
+    }
+
+    event = Event(EVENT_LEARNED, event_data)
+    learning_session_with_mac._async_handle_learned_event(event)
+
+    await asyncio.sleep(0.1)
+
+    # Malformed MAC should be dropped and device_id should match
+    assert learning_session_with_mac.state == STATE_RECEIVED
+    assert learning_session_with_mac.pending_code is not None
+
+
+async def test_malformed_event_mac_rejected_when_device_id_also_mismatches(
+    hass: HomeAssistant, learning_session_with_mac: LearningSession
+) -> None:
+    """Test that a malformed event MAC plus a wrong device_id is still rejected.
+
+    The malformed-MAC fallback must not become a wildcard that lets
+    cross-device events leak through.
+    """
+    hass.services.async_register("switch", "turn_on", AsyncMock())
+
+    await learning_session_with_mac.async_start_learning()
+
+    event_data = {
+        ATTR_DEVICE_ID: "openirblaster-different",   # wrong device
+        ATTR_MAC_ADDRESS: "e\x0f",                    # garbage MAC
+        ATTR_CARRIER_HZ: 38000,
+        ATTR_PULSES_JSON: "[9000,-4500,560,-560]",
+    }
+
+    event = Event(EVENT_LEARNED, event_data)
+    learning_session_with_mac._async_handle_learned_event(event)
+
+    await asyncio.sleep(0.1)
+
+    # Wrong device_id with garbage MAC: should remain armed
+    assert learning_session_with_mac.state == STATE_ARMED
+    assert learning_session_with_mac.pending_code is None
+
+    await learning_session_with_mac.async_cleanup()
+
+
 # ---------------------------------------------------------------------------
-# Text_sensor fallback path (issue #8): when the ESPHome API socket drops the
-# learned event, the text_sensor state replays on reconnect. We must capture
-# the code via that path identically to the event path.
+# Capture-marker replay path: the firmware publishes a short timestamp marker
+# to a text_sensor after every learned capture. The marker state replays on
+# API reconnect, so when the integration sees the marker change but no
+# corresponding event arrives we ask the firmware to re-fire the event via
+# the replay_last_ir service.
 # ---------------------------------------------------------------------------
 
 # Matches the pattern in learning._resolve_text_sensor_entity_id:
-# sensor.{device_id slug}_last_learned_ir_payload
-_TEXT_SENSOR_ENTITY_ID = "sensor.openirblaster_test123_last_learned_ir_payload"
+# sensor.{device_id slug}_last_ir_capture_marker
+_CAPTURE_MARKER_ENTITY_ID = "sensor.openirblaster_test123_last_ir_capture_marker"
 
-_GOOD_TEXT_SENSOR_PAYLOAD = json.dumps(
-    {
-        "device_id": "openirblaster-test123",
-        "carrier_hz": 38000,
-        "rssi": -45,
-        "timestamp": "2026-01-12T14:30:00-05:00",
-        "pulses": [9000, -4500, 560, -560],
+# Default send_ir_raw service name used in the tests. The replay service
+# name is derived by replacing the suffix.
+_SEND_SERVICE_NAME = "openirblaster_test123_send_ir_raw"
+_REPLAY_SERVICE_NAME = "openirblaster_test123_replay_last_ir"
+
+
+def _install_replay_service_mock(
+    hass: HomeAssistant,
+    config_entry_id: str = "test_entry",
+    send_service: str = _SEND_SERVICE_NAME,
+    replay_service: str = _REPLAY_SERVICE_NAME,
+) -> AsyncMock:
+    """Populate hass.data so get_esphome_service resolves, and register a
+    replay-service AsyncMock callers can assert against.
+    """
+    from custom_components.openirblaster.const import DOMAIN
+
+    hass.data.setdefault(DOMAIN, {})
+    hass.data[DOMAIN][config_entry_id] = {
+        "esphome_service_name": send_service,
     }
-)
+    replay_mock = AsyncMock()
+    hass.services.async_register("esphome", replay_service, replay_mock)
+    return replay_mock
 
 
-async def test_text_sensor_fallback_captures_code(
-    hass: HomeAssistant, learning_session: LearningSession
+async def test_marker_change_requests_replay_after_grace(
+    hass: HomeAssistant, learning_session: LearningSession, monkeypatch
 ) -> None:
-    """State change on the payload text_sensor captures the code when the event is lost."""
+    """Marker state change with no event in the grace window triggers replay."""
+    import custom_components.openirblaster.learning as learning_module
+
+    monkeypatch.setattr(learning_module, "_REPLAY_GRACE_SECONDS", 0.1)
+    replay_mock = _install_replay_service_mock(hass)
+
     hass.services.async_register("switch", "turn_on", AsyncMock())
     hass.services.async_register("switch", "turn_off", AsyncMock())
 
-    # Pre-populate the text_sensor so the resolver finds it
-    hass.states.async_set(_TEXT_SENSOR_ENTITY_ID, "")
-
+    hass.states.async_set(_CAPTURE_MARKER_ENTITY_ID, "")
     await learning_session.async_start_learning()
     assert learning_session._state_listener is not None
-    # Pin the resolved entity_id so the test doesn't silently become a no-op
-    # if the slug heuristic ever drifts and subscribes to a different entity
-    # than the one we publish state to below.
-    assert learning_session._text_sensor_entity_id == _TEXT_SENSOR_ENTITY_ID
+    assert learning_session._text_sensor_entity_id == _CAPTURE_MARKER_ENTITY_ID
 
-    # Simulate the firmware publishing the learned payload on reconnect
-    hass.states.async_set(_TEXT_SENSOR_ENTITY_ID, _GOOD_TEXT_SENSOR_PAYLOAD)
+    # Firmware publishes the marker. No event arrives.
+    hass.states.async_set(_CAPTURE_MARKER_ENTITY_ID, "2026-05-20T12:00:00+0000")
     await hass.async_block_till_done()
-    await asyncio.sleep(0.1)
+    await asyncio.sleep(0.5)
+
+    assert replay_mock.await_count == 1
+    # Still armed; the replay service would now fire an event that finalizes.
+    assert learning_session.state == STATE_ARMED
+
+
+async def test_event_within_grace_cancels_replay(
+    hass: HomeAssistant, learning_session: LearningSession, monkeypatch
+) -> None:
+    """If the learned event arrives within the grace window, replay is skipped."""
+    import custom_components.openirblaster.learning as learning_module
+
+    monkeypatch.setattr(learning_module, "_REPLAY_GRACE_SECONDS", 0.2)
+    replay_mock = _install_replay_service_mock(hass)
+
+    hass.services.async_register("switch", "turn_on", AsyncMock())
+    hass.services.async_register("switch", "turn_off", AsyncMock())
+
+    hass.states.async_set(_CAPTURE_MARKER_ENTITY_ID, "")
+    await learning_session.async_start_learning()
+
+    # Marker change schedules the wait task.
+    hass.states.async_set(_CAPTURE_MARKER_ENTITY_ID, "2026-05-20T12:00:00+0000")
+    await hass.async_block_till_done()
+
+    # Event arrives well within the grace window.
+    event = Event(
+        EVENT_LEARNED,
+        {
+            ATTR_DEVICE_ID: "openirblaster-test123",
+            ATTR_CARRIER_HZ: 38000,
+            ATTR_PULSES_JSON: "[9000,-4500,560,-560]",
+            ATTR_TIMESTAMP: "2026-05-20T12:00:00+0000",
+        },
+    )
+    learning_session._async_handle_learned_event(event)
+    await asyncio.sleep(0.6)  # well past the grace window
 
     assert learning_session.state == STATE_RECEIVED
     assert learning_session.pending_code is not None
-    assert learning_session.pending_code.carrier_hz == 38000
-    assert learning_session.pending_code.pulses == [9000, -4500, 560, -560]
+    assert replay_mock.await_count == 0
 
 
-async def test_event_first_deduplicates_text_sensor(
-    hass: HomeAssistant, learning_session: LearningSession
+async def test_marker_change_after_finalize_is_ignored(
+    hass: HomeAssistant, learning_session: LearningSession, monkeypatch
 ) -> None:
-    """When the event arrives first, a later text_sensor state change is ignored."""
+    """A marker change that arrives after the capture is finalized is a no-op."""
+    import custom_components.openirblaster.learning as learning_module
+
+    monkeypatch.setattr(learning_module, "_REPLAY_GRACE_SECONDS", 0.1)
+    replay_mock = _install_replay_service_mock(hass)
+
     hass.services.async_register("switch", "turn_on", AsyncMock())
     hass.services.async_register("switch", "turn_off", AsyncMock())
 
-    hass.states.async_set(_TEXT_SENSOR_ENTITY_ID, "")
+    hass.states.async_set(_CAPTURE_MARKER_ENTITY_ID, "")
     await learning_session.async_start_learning()
 
-    # Event arrives first
+    # Event arrives first and finalizes.
     event = Event(
         EVENT_LEARNED,
         {
             ATTR_DEVICE_ID: "openirblaster-test123",
             ATTR_CARRIER_HZ: 38000,
             ATTR_PULSES_JSON: "[9000,-4500]",
-            ATTR_TIMESTAMP: "2026-01-12T14:30:00-05:00",
+            ATTR_TIMESTAMP: "2026-05-20T12:00:00+0000",
         },
     )
     learning_session._async_handle_learned_event(event)
-    await asyncio.sleep(0.1)
-
+    await asyncio.sleep(0.05)
     assert learning_session.state == STATE_RECEIVED
-    first_pulses = list(learning_session.pending_code.pulses)
-    assert first_pulses == [9000, -4500]
 
-    # A late text_sensor payload (different pulses) must not overwrite
-    hass.states.async_set(
-        _TEXT_SENSOR_ENTITY_ID,
-        json.dumps(
-            {
-                "device_id": "openirblaster-test123",
-                "carrier_hz": 38000,
-                "pulses": [1111, -2222, 3333],
-                "timestamp": "2026-01-12T14:30:01-05:00",
-            }
-        ),
-    )
+    # Now a stale marker change arrives (e.g., replay from a prior session).
+    # The session has already moved out of ARMED, so the handler must ignore
+    # it and never schedule a replay request.
+    hass.states.async_set(_CAPTURE_MARKER_ENTITY_ID, "2026-05-20T12:00:00+0000")
     await hass.async_block_till_done()
-    await asyncio.sleep(0.1)
+    await asyncio.sleep(0.5)
 
-    # Pending code unchanged
-    assert learning_session.pending_code.pulses == first_pulses
+    assert replay_mock.await_count == 0
 
 
-async def test_text_sensor_first_deduplicates_event(
-    hass: HomeAssistant, learning_session: LearningSession
+@pytest.mark.parametrize("bad_state", ["", "unknown", "unavailable"])
+async def test_marker_empty_or_unavailable_is_ignored(
+    hass: HomeAssistant,
+    learning_session: LearningSession,
+    monkeypatch,
+    bad_state: str,
 ) -> None:
-    """When the text_sensor fires first, a subsequent event is ignored."""
+    """Empty / unknown / unavailable marker states do not schedule a replay."""
+    import custom_components.openirblaster.learning as learning_module
+
+    monkeypatch.setattr(learning_module, "_REPLAY_GRACE_SECONDS", 0.1)
+    replay_mock = _install_replay_service_mock(hass)
+
     hass.services.async_register("switch", "turn_on", AsyncMock())
     hass.services.async_register("switch", "turn_off", AsyncMock())
 
-    hass.states.async_set(_TEXT_SENSOR_ENTITY_ID, "")
+    hass.states.async_set(_CAPTURE_MARKER_ENTITY_ID, "seed")
     await learning_session.async_start_learning()
 
-    # Text_sensor fires first (simulates dropped event)
-    hass.states.async_set(_TEXT_SENSOR_ENTITY_ID, _GOOD_TEXT_SENSOR_PAYLOAD)
+    hass.states.async_set(_CAPTURE_MARKER_ENTITY_ID, bad_state)
     await hass.async_block_till_done()
-    await asyncio.sleep(0.1)
-    assert learning_session.state == STATE_RECEIVED
-    first_pulses = list(learning_session.pending_code.pulses)
-
-    # Late event arrives with different data; must not re-trigger finalize
-    late_event = Event(
-        EVENT_LEARNED,
-        {
-            ATTR_DEVICE_ID: "openirblaster-test123",
-            ATTR_CARRIER_HZ: 40000,
-            ATTR_PULSES_JSON: "[1,2,3,4]",
-            ATTR_TIMESTAMP: "2026-01-12T14:30:02-05:00",
-        },
-    )
-    learning_session._async_handle_learned_event(late_event)
-    await asyncio.sleep(0.1)
-
-    assert learning_session.pending_code.pulses == first_pulses
-    assert learning_session.pending_code.carrier_hz == 38000
-
-
-async def test_text_sensor_invalid_json_cancels_cleanly(
-    hass: HomeAssistant, learning_session: LearningSession
-) -> None:
-    """Invalid JSON on the text_sensor should cancel the session."""
-    hass.services.async_register("switch", "turn_on", AsyncMock())
-    hass.services.async_register("switch", "turn_off", AsyncMock())
-
-    hass.states.async_set(_TEXT_SENSOR_ENTITY_ID, "")
-    await learning_session.async_start_learning()
-    assert learning_session.state == STATE_ARMED
-
-    hass.states.async_set(_TEXT_SENSOR_ENTITY_ID, "{not valid json")
-    await hass.async_block_till_done()
-    await asyncio.sleep(0.1)
-
-    assert learning_session.state == STATE_CANCELLED
-    assert learning_session.pending_code is None
-
-
-async def test_text_sensor_empty_payload_is_ignored(
-    hass: HomeAssistant, learning_session: LearningSession
-) -> None:
-    """Empty-string publishes (e.g. the 'Clear' button on the device) are noise."""
-    hass.services.async_register("switch", "turn_on", AsyncMock())
-    hass.services.async_register("switch", "turn_off", AsyncMock())
-
-    hass.states.async_set(_TEXT_SENSOR_ENTITY_ID, "seed")
-    await learning_session.async_start_learning()
-
-    # Clear the sensor -> empty state. Must not cancel or transition.
-    hass.states.async_set(_TEXT_SENSOR_ENTITY_ID, "")
-    await hass.async_block_till_done()
-    await asyncio.sleep(0.1)
+    await asyncio.sleep(0.5)
 
     assert learning_session.state == STATE_ARMED
-    assert learning_session.pending_code is None
+    assert replay_mock.await_count == 0
 
     await learning_session.async_cleanup()
+
+
+async def test_replay_skipped_when_send_service_unavailable(
+    hass: HomeAssistant, learning_session: LearningSession, monkeypatch, caplog
+) -> None:
+    """If the send service is missing, we log and skip replay (no crash)."""
+    import logging
+
+    import custom_components.openirblaster.learning as learning_module
+    from custom_components.openirblaster.const import DOMAIN
+
+    monkeypatch.setattr(learning_module, "_REPLAY_GRACE_SECONDS", 0.1)
+
+    # Populate hass.data but leave esphome_service_name unset.
+    hass.data.setdefault(DOMAIN, {})
+    hass.data[DOMAIN]["test_entry"] = {}
+
+    hass.services.async_register("switch", "turn_on", AsyncMock())
+    hass.services.async_register("switch", "turn_off", AsyncMock())
+    hass.states.async_set(_CAPTURE_MARKER_ENTITY_ID, "")
+
+    caplog.set_level(
+        logging.ERROR, logger="custom_components.openirblaster.learning"
+    )
+
+    await learning_session.async_start_learning()
+    hass.states.async_set(_CAPTURE_MARKER_ENTITY_ID, "2026-05-20T12:00:00+0000")
+    await hass.async_block_till_done()
+    await asyncio.sleep(0.5)
+
+    assert any(
+        "Cannot request replay" in rec.message for rec in caplog.records
+    )
+    assert learning_session.state == STATE_ARMED
+
+
+async def test_clear_pending_cancels_pending_replay_task(
+    hass: HomeAssistant, learning_session: LearningSession, monkeypatch
+) -> None:
+    """async_clear_pending cancels in-flight wait-then-replay tasks."""
+    import custom_components.openirblaster.learning as learning_module
+
+    monkeypatch.setattr(learning_module, "_REPLAY_GRACE_SECONDS", 0.5)
+    replay_mock = _install_replay_service_mock(hass)
+
+    hass.services.async_register("switch", "turn_on", AsyncMock())
+    hass.services.async_register("switch", "turn_off", AsyncMock())
+
+    hass.states.async_set(_CAPTURE_MARKER_ENTITY_ID, "")
+    await learning_session.async_start_learning()
+
+    # Trigger a marker change so a wait-then-replay task is scheduled.
+    hass.states.async_set(_CAPTURE_MARKER_ENTITY_ID, "2026-05-20T12:00:00+0000")
+    await hass.async_block_till_done()
+    assert len(learning_session._pending_replay_tasks) == 1
+
+    # User dismisses before grace elapses.
+    await learning_session.async_clear_pending()
+    await asyncio.sleep(1.0)  # past the original grace window
+
+    assert learning_session._pending_replay_tasks == set()
+    assert replay_mock.await_count == 0
+    assert learning_session.state == STATE_IDLE
 
 
 async def test_async_clear_pending_tears_down_listeners_and_timeout(
@@ -586,7 +725,7 @@ async def test_async_clear_pending_tears_down_listeners_and_timeout(
     hass.services.async_register("switch", "turn_on", AsyncMock())
     hass.services.async_register("switch", "turn_off", AsyncMock())
 
-    hass.states.async_set(_TEXT_SENSOR_ENTITY_ID, "")
+    hass.states.async_set(_CAPTURE_MARKER_ENTITY_ID, "")
     await learning_session.async_start_learning()
     assert learning_session._timeout_handle is not None
     assert learning_session._event_listener is not None
@@ -646,8 +785,8 @@ async def test_resolver_strategy_1_device_registry_by_mac(
     ent_reg.async_get_or_create(
         domain="sensor",
         platform="esphome",
-        unique_id="some-prefix-last_ir_raw_snippet",
-        suggested_object_id="custom_named_payload",
+        unique_id="some-prefix-last_ir_capture_marker",
+        suggested_object_id="custom_named_marker",
         device_id=ha_device.id,
     )
 
@@ -661,7 +800,7 @@ async def test_resolver_strategy_1_device_registry_by_mac(
     )
 
     resolved = session._resolve_text_sensor_entity_id()
-    assert resolved == "sensor.custom_named_payload"
+    assert resolved == "sensor.custom_named_marker"
 
 
 async def test_resolver_returns_none_falls_back_to_event_path(
@@ -696,23 +835,23 @@ async def test_resolver_returns_none_falls_back_to_event_path(
         assert session._state_listener is None
         assert session._event_listener is not None
         assert any(
-            "Could not resolve ESPHome payload text_sensor" in rec.message
+            "Could not resolve capture marker text_sensor" in rec.message
             for rec in caplog.records
         )
     finally:
         await session.async_cleanup()
 
 
-async def test_validation_failure_sets_finalized_flag_synchronously(
+async def test_invalid_pulses_json_sets_finalized_flag_synchronously(
     hass: HomeAssistant, learning_session: LearningSession
 ) -> None:
-    """A bad text_sensor payload must set `_capture_finalized = True` synchronously.
+    """A bad pulses_json must set `_capture_finalized = True` synchronously.
 
-    This closes the S1/S2 race: if the flag were only flipped when the
-    scheduled `_async_cancel` task finally ran, the other capture path
-    (event or text_sensor) could slip a valid payload through the
-    `STATE_ARMED + not finalized` guard in between. The subsequent cancel
-    would then clobber a legitimately committed capture.
+    Closes the race between the event path's validation failure and any
+    concurrently-arriving replay event: if the flag were only flipped when
+    the scheduled `_async_cancel` task finally ran, a replay event slipping
+    through the `STATE_ARMED + not finalized` guard could commit a capture
+    that the pending cancel would then clobber.
 
     We assert the flag is True *before* yielding to the event loop, which
     proves no interleaved handler can observe `_capture_finalized == False`.
@@ -720,32 +859,29 @@ async def test_validation_failure_sets_finalized_flag_synchronously(
     hass.services.async_register("switch", "turn_on", AsyncMock())
     hass.services.async_register("switch", "turn_off", AsyncMock())
 
-    hass.states.async_set(_TEXT_SENSOR_ENTITY_ID, "")
+    hass.states.async_set(_CAPTURE_MARKER_ENTITY_ID, "")
     await learning_session.async_start_learning()
     assert learning_session._capture_finalized is False
 
-    # Directly invoke the text_sensor handler with a bad payload. The handler
-    # is a @callback (sync), so by the time it returns, the guard must have
-    # been flipped even though _async_cancel is still a pending task.
-    bad_new_state = type(
-        "S", (), {"state": "{not valid json", "entity_id": _TEXT_SENSOR_ENTITY_ID}
-    )()
-    event = Event(
-        "state_changed",
+    # Fire an event with garbage pulses_json. The handler is @callback (sync),
+    # so by the time it returns the guard must have been flipped even though
+    # _async_cancel is still a pending task.
+    bad_event = Event(
+        EVENT_LEARNED,
         {
-            "entity_id": _TEXT_SENSOR_ENTITY_ID,
-            "old_state": None,
-            "new_state": bad_new_state,
+            ATTR_DEVICE_ID: "openirblaster-test123",
+            ATTR_CARRIER_HZ: 38000,
+            ATTR_PULSES_JSON: "{not valid json",
+            ATTR_TIMESTAMP: "2026-01-12T14:30:00-05:00",
         },
     )
-    learning_session._async_handle_text_sensor_state(event)
+    learning_session._async_handle_learned_event(bad_event)
 
-    # Flag is set synchronously, before any await has run the cancel task
+    # Flag set synchronously, before any await has run the cancel task.
     assert learning_session._capture_finalized is True
 
-    # Now fire a valid event. Because the flag is already True, the event
-    # path must bail out and NOT commit the capture, even if cancel hasn't
-    # run yet.
+    # A replay event arriving with valid data must still be ignored, because
+    # the flag already blocks new captures from this session.
     valid_event = Event(
         EVENT_LEARNED,
         {
@@ -757,9 +893,9 @@ async def test_validation_failure_sets_finalized_flag_synchronously(
     )
     learning_session._async_handle_learned_event(valid_event)
 
-    # Drain the pending cancel task
+    # Drain the pending cancel task.
     await asyncio.sleep(0.1)
 
-    # No valid code committed; session cancelled, not received
+    # No valid code committed; session cancelled, not received.
     assert learning_session.pending_code is None
     assert learning_session.state == STATE_CANCELLED

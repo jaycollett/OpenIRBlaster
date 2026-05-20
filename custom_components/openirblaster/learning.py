@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -16,7 +17,6 @@ from .const import (
     ATTR_CARRIER_HZ,
     ATTR_DEVICE_ID,
     ATTR_MAC_ADDRESS,
-    ATTR_PULSES,
     ATTR_PULSES_JSON,
     ATTR_TIMESTAMP,
     EVENT_LEARNED,
@@ -28,11 +28,34 @@ from .const import (
     STATE_RECEIVED,
     STATE_TIMEOUT,
 )
+from .helpers import get_esphome_service
 
-# ESPHome firmware identifier for the payload text_sensor (id: last_ir_raw_snippet,
-# name: "Last Learned IR (payload)"). The HA entity_id is slugified from the name.
-_TEXT_SENSOR_OBJECT_ID_SUFFIX = "last_learned_ir_payload"
-_TEXT_SENSOR_FIRMWARE_ID = "last_ir_raw_snippet"
+# ESPHome firmware identifier for the capture-marker text_sensor (id and
+# slugified name both equal "last_ir_capture_marker"). The marker carries
+# only a short timestamp string -- it deliberately stays under HA core's
+# 255-char state-length limit so the state change survives the bus. When
+# this state changes we use it as a hint to ask the firmware to replay
+# the learned event in case the original was lost on a transient API drop.
+_CAPTURE_MARKER_OBJECT_ID_SUFFIX = "last_ir_capture_marker"
+_CAPTURE_MARKER_FIRMWARE_ID = "last_ir_capture_marker"
+
+# How long to wait for the original learned event after seeing the marker
+# state change. The event normally arrives within milliseconds; the only
+# reason it would not is a dropped API socket between event emission and
+# HA's bus, which is exactly what the replay path is built to recover.
+_REPLAY_GRACE_SECONDS = 0.5
+
+# Suffix the firmware uses for both ESPHome API services so we can derive
+# the replay service name from the cached send_ir_raw service name without
+# a second discovery pass.
+_SEND_SERVICE_SUFFIX = "_send_ir_raw"
+_REPLAY_SERVICE_SUFFIX = "_replay_last_ir"
+
+# Colon-separated hex MAC like "AA:BB:CC:DD:EE:FF". Older firmware versions
+# returned a dangling-pointer c_str() in the on_raw lambda, so the event MAC
+# field would arrive as a few bytes of stale heap memory instead of a real
+# MAC. We use this to detect that case and fall back to device_id matching.
+_MAC_ADDRESS_RE = re.compile(r"^[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5}$")
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -82,11 +105,17 @@ class LearningSession:
         self._event_listener: Callable | None = None
         self._state_listener: Callable | None = None
         self._text_sensor_entity_id: str | None = None
-        # Guards against the event and text-sensor fallback paths both firing
-        # for the same learning capture (transient ESPHome API disconnect can
-        # drop the event while the text_sensor state replays on reconnect).
+        # Guards against the event and replay paths both committing a capture
+        # for the same session. A transient ESPHome API disconnect can drop
+        # the original event while the marker text_sensor state replays on
+        # reconnect; that replay triggers replay_last_ir, which re-fires the
+        # event. Once one path finalizes, the other has to bail.
         self._capture_finalized: bool = False
         self._timeout_handle: asyncio.TimerHandle | None = None
+        # Pending wait-then-replay tasks scheduled from the marker handler.
+        # Tracked so session teardown can cancel them, otherwise we'd leak
+        # 500ms-pending tasks that hold a reference to this session.
+        self._pending_replay_tasks: set[asyncio.Task] = set()
         self._callbacks: list[Callable[[str, LearnedCode | None], None]] = []
 
     @property
@@ -158,24 +187,23 @@ class LearningSession:
             EVENT_LEARNED, self._async_handle_learned_event
         )
 
-        # Subscribe to the ESPHome payload text_sensor as a fallback. The
-        # text_sensor state is resent when the ESPHome API reconnects, so it
-        # survives transient socket drops that would otherwise swallow the
-        # event. If the sensor cannot be resolved (e.g. device briefly offline
-        # during setup) we just log and rely on the event path.
+        # Subscribe to the capture-marker text_sensor. The marker's state
+        # changes after every learned capture and the value replays on API
+        # reconnect; if the original event was lost on a transient socket
+        # drop we use the state change as a hint to call replay_last_ir.
         self._text_sensor_entity_id = self._resolve_text_sensor_entity_id()
         if self._text_sensor_entity_id:
             _LOGGER.debug(
-                "Subscribing to text_sensor fallback: %s", self._text_sensor_entity_id
+                "Subscribing to capture marker: %s", self._text_sensor_entity_id
             )
             self._state_listener = async_track_state_change_event(
                 self.hass,
                 [self._text_sensor_entity_id],
-                self._async_handle_text_sensor_state,
+                self._async_handle_capture_marker_change,
             )
         else:
             _LOGGER.warning(
-                "Could not resolve ESPHome payload text_sensor for device %s; "
+                "Could not resolve capture marker text_sensor for device %s; "
                 "learning will rely on event path only",
                 self.device_id,
             )
@@ -190,7 +218,7 @@ class LearningSession:
         return True
 
     def _resolve_text_sensor_entity_id(self) -> str | None:
-        """Locate the ESPHome ``last_ir_raw_snippet`` text_sensor entity_id.
+        """Locate the capture-marker text_sensor entity_id.
 
         Strategy (most robust first):
         1. If MAC is known, look up the ESPHome device in the HA device
@@ -201,7 +229,7 @@ class LearningSession:
            device name (hyphens -> underscores).
 
         Returns ``None`` if nothing matches; callers should log and continue
-        without the fallback path.
+        without the replay safety net.
         """
         try:
             ent_reg = er.async_get(self.hass)
@@ -231,19 +259,19 @@ class LearningSession:
                             continue
                         unique_id = (entity.unique_id or "").lower()
                         entity_id = entity.entity_id.lower()
-                        if _TEXT_SENSOR_FIRMWARE_ID in unique_id:
+                        if _CAPTURE_MARKER_FIRMWARE_ID in unique_id:
                             return entity.entity_id
-                        if entity_id.endswith(f"_{_TEXT_SENSOR_OBJECT_ID_SUFFIX}"):
+                        if entity_id.endswith(f"_{_CAPTURE_MARKER_OBJECT_ID_SUFFIX}"):
                             return entity.entity_id
             except Exception as err:
                 _LOGGER.debug(
-                    "Text_sensor device-registry lookup failed: %s", err
+                    "Capture marker device-registry lookup failed: %s", err
                 )
 
         # Strategy 2: pattern from ESPHome device name. ESPHome slugs the
         # device name by lowercasing and replacing non-word chars with "_".
         slug = self.device_id.lower().replace("-", "_")
-        candidate = f"sensor.{slug}_{_TEXT_SENSOR_OBJECT_ID_SUFFIX}"
+        candidate = f"sensor.{slug}_{_CAPTURE_MARKER_OBJECT_ID_SUFFIX}"
         if self.hass.states.get(candidate) is not None:
             return candidate
         if ent_reg is not None and ent_reg.async_get(candidate) is not None:
@@ -252,14 +280,20 @@ class LearningSession:
         return None
 
     @callback
-    def _async_handle_text_sensor_state(self, event: Event) -> None:
-        """Handle a state change on the ESPHome payload text_sensor.
+    def _async_handle_capture_marker_change(self, event: Event) -> None:
+        """React to a state change on the capture-marker text_sensor.
 
-        The text_sensor carries the same learned-code data as the event, but
-        as a JSON object in the state string. This path exists because the
-        ESPHome API socket can drop the event while the text_sensor state is
-        replayed on reconnect.
+        The marker changes after every learned capture and the value
+        survives an API reconnect, which gives us a hook to detect a lost
+        event. We arm a short grace timer; if the corresponding learned
+        event arrives within that window the timer is a no-op, otherwise
+        we call replay_last_ir on the device to re-fire the event.
         """
+        # Defensive: if cleanup has already torn down the state listener
+        # but we somehow still got dispatched (race during shutdown), don't
+        # schedule a wait task into a closing loop.
+        if self._state_listener is None:
+            return
         if self._state != STATE_ARMED or self._capture_finalized:
             return
 
@@ -267,60 +301,67 @@ class LearningSession:
         if new_state is None:
             return
 
-        payload = new_state.state
-        if not payload or payload in ("unknown", "unavailable", ""):
+        marker = new_state.state
+        if not marker or marker in ("unknown", "unavailable"):
             return
 
         _LOGGER.debug(
-            "Received text_sensor state update (len=%d) for %s",
-            len(payload),
+            "Capture marker changed to %r on %s; arming replay grace timer",
+            marker,
             self._text_sensor_entity_id,
         )
 
+        task = asyncio.create_task(self._async_wait_then_request_replay(marker))
+        self._pending_replay_tasks.add(task)
+        task.add_done_callback(self._pending_replay_tasks.discard)
+
+    async def _async_wait_then_request_replay(self, marker: str) -> None:
+        """Wait the grace period, then request a replay if no event arrived."""
         try:
-            data = json.loads(payload)
-        except (json.JSONDecodeError, TypeError) as err:
-            _LOGGER.error(
-                "Failed to parse text_sensor payload as JSON: %s", err
-            )
-            # Flip the guard synchronously so the event path cannot commit a
-            # valid capture in the window between "cancel scheduled" and
-            # "cancel task runs". Once a payload has been judged invalid, no
-            # subsequent path should re-evaluate this session.
-            self._capture_finalized = True
-            asyncio.create_task(
-                self._async_cancel("Invalid text_sensor payload (JSON parse)")
-            )
+            await asyncio.sleep(_REPLAY_GRACE_SECONDS)
+        except asyncio.CancelledError:
             return
 
-        if not isinstance(data, dict):
-            _LOGGER.error("Text_sensor payload is not a JSON object: %s", type(data))
-            self._capture_finalized = True
-            asyncio.create_task(self._async_cancel("Invalid text_sensor payload"))
+        if self._capture_finalized or self._state != STATE_ARMED:
+            # The event path already finalized this session, or the session
+            # ended (timed out, cancelled, cleared). Nothing to do.
             return
 
-        # Apply the same device filtering as the event path. The payload
-        # always includes device_id; MAC is not present in the text_sensor
-        # blob today but device_id matching is still a correctness guard if
-        # multiple devices are present.
-        event_device_id = data.get(ATTR_DEVICE_ID, "")
-        if self.mac_address is None:
-            if event_device_id and event_device_id != self.device_id:
-                _LOGGER.debug(
-                    "Ignoring text_sensor payload from device %s (ours: %s)",
-                    event_device_id,
-                    self.device_id,
-                )
-                return
-
-        self._process_capture_payload(
-            carrier_hz=data.get(ATTR_CARRIER_HZ),
-            pulses_raw=data.get(ATTR_PULSES),
-            pulses_json=None,
-            timestamp=data.get(ATTR_TIMESTAMP),
-            source_device_id=event_device_id or self.device_id,
-            source="text_sensor",
+        _LOGGER.warning(
+            "Capture marker %r observed but no learned event arrived within "
+            "%.1fs; requesting replay from device",
+            marker,
+            _REPLAY_GRACE_SECONDS,
         )
+        await self._async_request_replay()
+
+    async def _async_request_replay(self) -> None:
+        """Call the device's replay_last_ir service to re-fire the event."""
+        send_service = get_esphome_service(self.hass, self.config_entry_id)
+        if not send_service or not send_service.endswith(_SEND_SERVICE_SUFFIX):
+            _LOGGER.error(
+                "Cannot request replay: send_ir_raw service is %r, "
+                "expected a name ending in %r",
+                send_service,
+                _SEND_SERVICE_SUFFIX,
+            )
+            return
+
+        replay_service = (
+            send_service[: -len(_SEND_SERVICE_SUFFIX)] + _REPLAY_SERVICE_SUFFIX
+        )
+
+        try:
+            await self.hass.services.async_call(
+                "esphome",
+                replay_service,
+                {},
+                blocking=False,
+            )
+        except Exception as err:
+            _LOGGER.error(
+                "Failed to call replay service %s: %s", replay_service, err
+            )
 
     @callback
     def _async_handle_learned_event(self, event: Event) -> None:
@@ -338,6 +379,20 @@ class LearningSession:
         # MAC address matching is case-insensitive
         event_device_id = data.get(ATTR_DEVICE_ID, "")
         event_mac_address = data.get(ATTR_MAC_ADDRESS, "")
+
+        # Older firmware versions returned a dangling-pointer c_str() in the
+        # on_raw lambda, so the event MAC could arrive as a few bytes of stale
+        # heap memory rather than a real address. Detect that case and treat
+        # the event as if no MAC was supplied so device_id matching kicks in
+        # rather than silently dropping the event.
+        if event_mac_address and not _MAC_ADDRESS_RE.fullmatch(event_mac_address):
+            _LOGGER.warning(
+                "Event MAC %r is not a valid AA:BB:CC:DD:EE:FF address. "
+                "Device firmware likely needs to be updated. "
+                "Falling back to device_id matching for this event.",
+                event_mac_address,
+            )
+            event_mac_address = ""
 
         is_our_device = False
         mac_comparison_done = False
@@ -397,68 +452,49 @@ class LearningSession:
 
         if self._capture_finalized:
             _LOGGER.debug(
-                "Ignoring duplicate event after capture already finalized via "
-                "fallback path"
+                "Ignoring duplicate event after capture already finalized"
             )
             return
 
-        # Parse pulses from JSON string (firmware sends pulses_json) or array
-        pulses_json = data.get(ATTR_PULSES_JSON)
-        pulses_raw = data.get(ATTR_PULSES)
         self._process_capture_payload(
             carrier_hz=data.get(ATTR_CARRIER_HZ),
-            pulses_raw=pulses_raw,
-            pulses_json=pulses_json,
+            pulses_json=data.get(ATTR_PULSES_JSON),
             timestamp=data.get(ATTR_TIMESTAMP),
             source_device_id=event_device_id,
-            source="event",
         )
 
     def _process_capture_payload(
         self,
         *,
         carrier_hz,
-        pulses_raw,
         pulses_json: str | None,
         timestamp: str | None,
         source_device_id: str,
-        source: str,
     ) -> None:
-        """Validate and commit a capture from either path.
+        """Validate and commit a captured learned event.
 
-        Shared by the event handler and the text_sensor state fallback so the
-        two paths apply identical validation, timeout cleanup, and state
-        transitions. Callers are responsible for device-filtering and for
-        checking ``_capture_finalized`` before invoking.
+        Caller is responsible for device-filtering and for checking
+        ``_capture_finalized`` before invoking. Sets ``_capture_finalized``
+        atomically before any await so a concurrent replay event finds it
+        set and bails.
         """
         if self._capture_finalized:
-            # Belt-and-suspenders: each caller already guards, but re-check
-            # to be safe against races between the two async paths.
+            # Belt-and-suspenders: caller already guards, but re-check in
+            # case a replay event arrived between caller's check and here.
             return
 
-        # Parse pulses: prefer JSON string form (event path), fall back to
-        # direct array (text_sensor path or future firmware variants).
-        pulses: list[int]
-        if pulses_json is not None:
-            try:
-                pulses = json.loads(pulses_json)
-            except (json.JSONDecodeError, TypeError) as err:
-                _LOGGER.error("Failed to parse pulses_json: %s", err)
-                # Flip the guard synchronously so the other capture path (if
-                # it fires between now and when _async_cancel runs) cannot
-                # commit a valid capture that would then be clobbered by the
-                # pending cancel task.
-                self._capture_finalized = True
-                asyncio.create_task(
-                    self._async_cancel("Invalid pulse data format")
-                )
-                return
-        elif pulses_raw is not None:
-            pulses = pulses_raw
-        else:
-            _LOGGER.error("No pulses found in %s payload", source)
+        if not pulses_json:
+            _LOGGER.error("Event payload missing pulses_json")
             self._capture_finalized = True
             asyncio.create_task(self._async_cancel("Missing pulse data"))
+            return
+
+        try:
+            pulses = json.loads(pulses_json)
+        except (json.JSONDecodeError, TypeError) as err:
+            _LOGGER.error("Failed to parse pulses_json: %s", err)
+            self._capture_finalized = True
+            asyncio.create_task(self._async_cancel("Invalid pulse data format"))
             return
 
         # Convert carrier_hz to int if it's a string (ESPHome may send as string)
@@ -472,23 +508,20 @@ class LearningSession:
                 return
 
         if not isinstance(carrier_hz, int) or carrier_hz <= 0:
-            _LOGGER.error(
-                "Invalid carrier_hz in %s payload: %s", source, carrier_hz
-            )
+            _LOGGER.error("Invalid carrier_hz in event payload: %s", carrier_hz)
             self._capture_finalized = True
             asyncio.create_task(self._async_cancel("Invalid carrier frequency"))
             return
 
         if not isinstance(pulses, list) or len(pulses) == 0:
-            _LOGGER.error("Invalid or empty pulses array in %s payload", source)
+            _LOGGER.error("Invalid or empty pulses array in event payload")
             self._capture_finalized = True
             asyncio.create_task(self._async_cancel("Invalid pulse data"))
             return
 
         if len(pulses) > MAX_PULSE_ARRAY_LENGTH:
             _LOGGER.error(
-                "Pulse array too large (%s): %d (max: %d)",
-                source,
+                "Pulse array too large: %d (max: %d)",
                 len(pulses),
                 MAX_PULSE_ARRAY_LENGTH,
             )
@@ -500,8 +533,8 @@ class LearningSession:
             )
             return
 
-        # Commit capture. Mark finalized immediately so the other path bails
-        # out if it arrives between here and the async finalizer task.
+        # Commit capture. Mark finalized immediately so a replay event that
+        # races in between here and the async finalizer task bails out.
         self._capture_finalized = True
         self._pending_code = LearnedCode(
             carrier_hz=carrier_hz,
@@ -511,14 +544,22 @@ class LearningSession:
         )
 
         _LOGGER.info(
-            "Learned code captured via %s: %d Hz, %d pulses",
-            source,
+            "Learned code captured: %d Hz, %d pulses",
             carrier_hz,
             len(pulses),
         )
 
         # Clean up and transition to RECEIVED state
         asyncio.create_task(self._async_finalize_learning())
+
+    def _cancel_pending_replay_tasks(self) -> None:
+        """Cancel any in-flight wait-then-replay tasks scheduled by the marker."""
+        if not self._pending_replay_tasks:
+            return
+        for task in list(self._pending_replay_tasks):
+            if not task.done():
+                task.cancel()
+        self._pending_replay_tasks.clear()
 
     async def _async_finalize_learning(self) -> None:
         """Finalize learning after code received."""
@@ -538,13 +579,15 @@ class LearningSession:
         except Exception as err:
             _LOGGER.error("Failed to disable learning mode: %s", err)
 
-        # Unsubscribe from both primary (event) and fallback (text_sensor) paths
+        # Unsubscribe from primary (event) and marker (state) paths, and
+        # cancel any wait-then-replay task that may still be pending.
         if self._event_listener:
             self._event_listener()
             self._event_listener = None
         if self._state_listener:
             self._state_listener()
             self._state_listener = None
+        self._cancel_pending_replay_tasks()
 
         self._state = STATE_RECEIVED
         self._notify_state_change()
@@ -581,13 +624,14 @@ class LearningSession:
 
         _LOGGER.warning("Learning session timed out after %d seconds", self.timeout)
 
-        # Unsubscribe from both listener paths
+        # Unsubscribe listeners and cancel any pending replay task.
         if self._event_listener:
             self._event_listener()
             self._event_listener = None
         if self._state_listener:
             self._state_listener()
             self._state_listener = None
+        self._cancel_pending_replay_tasks()
 
         # Disable learning mode
         try:
@@ -612,13 +656,14 @@ class LearningSession:
             self._timeout_handle.cancel()
             self._timeout_handle = None
 
-        # Unsubscribe from both listener paths
+        # Unsubscribe listeners and cancel any pending replay task.
         if self._event_listener:
             self._event_listener()
             self._event_listener = None
         if self._state_listener:
             self._state_listener()
             self._state_listener = None
+        self._cancel_pending_replay_tasks()
 
         # Disable learning mode
         try:
@@ -693,13 +738,14 @@ class LearningSession:
             self._timeout_handle.cancel()
             self._timeout_handle = None
 
-        # Unsubscribe both listener paths if still registered
+        # Unsubscribe listeners and cancel any pending replay task.
         if self._event_listener:
             self._event_listener()
             self._event_listener = None
         if self._state_listener:
             self._state_listener()
             self._state_listener = None
+        self._cancel_pending_replay_tasks()
 
         self._pending_code = None
         self._capture_finalized = False
@@ -723,6 +769,8 @@ class LearningSession:
         if self._state_listener:
             self._state_listener()
             self._state_listener = None
+
+        self._cancel_pending_replay_tasks()
 
         # Clear all callbacks to prevent orphaned references
         self._callbacks.clear()
