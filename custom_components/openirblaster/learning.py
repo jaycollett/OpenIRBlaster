@@ -25,6 +25,7 @@ from .const import (
     ATTR_DEVICE_ID,
     ATTR_MAC_ADDRESS,
     ATTR_PULSES_JSON,
+    ATTR_RSSI,
     ATTR_TIMESTAMP,
     DOMAIN,
     EVENT_LEARNED,
@@ -76,6 +77,7 @@ class LearnedCode:
     pulses: list[int]
     timestamp: str
     device_id: str
+    rssi: int | None = None
 
 
 class LearningSession:
@@ -107,6 +109,9 @@ class LearningSession:
         self.mac_address = mac_address
         self.learning_switch_entity_id = learning_switch_entity_id
         self.timeout = timeout
+        # Timeout governing the current/most recent session (may be a
+        # per-call override of the default).
+        self._active_timeout = timeout
 
         self._state = STATE_IDLE
         self._pending_code: LearnedCode | None = None
@@ -170,20 +175,43 @@ class LearningSession:
     async def async_start_learning(self, timeout: int | None = None) -> bool:
         """Start a learning session.
 
+        Terminal states (TIMEOUT, CANCELLED, SAVED, or RECEIVED with the
+        pending code already consumed) are reset automatically so service
+        users are never dead-ended. Only an in-progress (ARMED) session and
+        an unsaved pending code (RECEIVED) are rejected, since proceeding
+        would destroy state the user still cares about.
+
         Args:
             timeout: Optional per-session timeout override in seconds. When
                 None, the session default (``self.timeout``) is used. The
                 override applies to this session only and does not change
                 the default for subsequent sessions.
         """
-        if self._state != STATE_IDLE:
+        if self._state == STATE_ARMED:
             _LOGGER.warning(
                 "Cannot start learning: session already in state %s", self._state
             )
             return False
+        if self._state == STATE_RECEIVED and self._pending_code is not None:
+            _LOGGER.warning(
+                "Cannot start learning: a learned code is pending save. "
+                "Save it, or cancel with discard_pending, before starting a "
+                "new session."
+            )
+            return False
+
+        needs_reset = self._state != STATE_IDLE
+        if needs_reset:
+            _LOGGER.info(
+                "Resetting learning session from terminal state %s", self._state
+            )
+            # Synchronous teardown of anything a terminal state left behind
+            # (idempotent; no await, so the claim below stays atomic).
+            self._teardown_listeners_and_timeout()
+            self._pending_code = None
 
         # Claim the session synchronously, before the first await, so a
-        # concurrent start hits the IDLE check above and is rejected.
+        # concurrent start hits the ARMED check above and is rejected.
         # Without this, two starts could both pass the check; the second
         # would overwrite the first's listener unsubscribe callable and
         # leak that bus subscription permanently.
@@ -191,6 +219,11 @@ class LearningSession:
         self._capture_finalized = False
 
         session_timeout = timeout if timeout is not None else self.timeout
+        self._active_timeout = session_timeout
+
+        if needs_reset:
+            # Dismiss stale notifications from the previous session.
+            await self._async_dismiss_notifications()
 
         _LOGGER.info("Starting learning session for device %s", self.device_id)
 
@@ -251,6 +284,43 @@ class LearningSession:
         if self._timeout_unsub:
             self._timeout_unsub()
             self._timeout_unsub = None
+
+    def _teardown_listeners_and_timeout(self) -> None:
+        """Cancel the timeout, unsubscribe both listener paths, and cancel
+        any pending replay task. Synchronous and idempotent."""
+        self._cancel_timeout()
+        if self._event_listener:
+            self._event_listener()
+            self._event_listener = None
+        if self._state_listener:
+            self._state_listener()
+            self._state_listener = None
+        self._cancel_pending_replay_tasks()
+
+    async def _async_dismiss_notifications(self) -> None:
+        """Dismiss any session notifications (learned/cancelled/timeout)."""
+        for notification_id in (
+            f"openirblaster_learned_{self.config_entry_id}",
+            f"openirblaster_cancelled_{self.config_entry_id}",
+            f"openirblaster_timeout_{self.config_entry_id}",
+        ):
+            await self.hass.services.async_call(
+                "persistent_notification",
+                "dismiss",
+                {"notification_id": notification_id},
+            )
+
+    async def _async_turn_off_learning_mode(self) -> None:
+        """Best-effort disable of the device's learning mode switch."""
+        try:
+            await self.hass.services.async_call(
+                "switch",
+                "turn_off",
+                {"entity_id": self.learning_switch_entity_id},
+                blocking=True,
+            )
+        except Exception as err:
+            _LOGGER.error("Failed to disable learning mode: %s", err)
 
     def _resolve_text_sensor_entity_id(self) -> str | None:
         """Locate the capture-marker text_sensor entity_id.
@@ -519,6 +589,7 @@ class LearningSession:
             pulses_json=data.get(ATTR_PULSES_JSON),
             timestamp=data.get(ATTR_TIMESTAMP),
             source_device_id=event_device_id,
+            rssi=data.get(ATTR_RSSI),
         )
 
     def _process_capture_payload(
@@ -528,6 +599,7 @@ class LearningSession:
         pulses_json: str | None,
         timestamp: str | None,
         source_device_id: str,
+        rssi: int | None = None,
     ) -> None:
         """Validate and commit a captured learned event.
 
@@ -610,6 +682,7 @@ class LearningSession:
             pulses=pulses,
             timestamp=timestamp or datetime.now(timezone.utc).isoformat(),
             device_id=source_device_id,
+            rssi=rssi,
         )
 
         _LOGGER.info(
@@ -632,29 +705,13 @@ class LearningSession:
 
     async def _async_finalize_learning(self) -> None:
         """Finalize learning after code received."""
-        # Cancel timeout (idempotent; already cancelled at the commit site)
-        self._cancel_timeout()
-
         # Disable learning mode
-        try:
-            await self.hass.services.async_call(
-                "switch",
-                "turn_off",
-                {"entity_id": self.learning_switch_entity_id},
-                blocking=True,
-            )
-        except Exception as err:
-            _LOGGER.error("Failed to disable learning mode: %s", err)
+        await self._async_turn_off_learning_mode()
 
-        # Unsubscribe from primary (event) and marker (state) paths, and
-        # cancel any wait-then-replay task that may still be pending.
-        if self._event_listener:
-            self._event_listener()
-            self._event_listener = None
-        if self._state_listener:
-            self._state_listener()
-            self._state_listener = None
-        self._cancel_pending_replay_tasks()
+        # Cancel the timeout (idempotent; already cancelled at the commit
+        # site), unsubscribe both capture paths, and cancel any pending
+        # replay task.
+        self._teardown_listeners_and_timeout()
 
         self._state = STATE_RECEIVED
         self._notify_state_change()
@@ -697,57 +754,77 @@ class LearningSession:
         if self._state != STATE_ARMED or self._capture_finalized:
             return
 
-        _LOGGER.warning("Learning session timed out after %d seconds", self.timeout)
+        # Log the timeout that actually governed this session (may be a
+        # per-call override of the default).
+        _LOGGER.warning(
+            "Learning session timed out after %d seconds", self._active_timeout
+        )
 
         # Unsubscribe listeners and cancel any pending replay task.
-        if self._event_listener:
-            self._event_listener()
-            self._event_listener = None
-        if self._state_listener:
-            self._state_listener()
-            self._state_listener = None
-        self._cancel_pending_replay_tasks()
+        self._teardown_listeners_and_timeout()
 
         # Disable learning mode
+        await self._async_turn_off_learning_mode()
+
+        # Surface the timeout in the UI; a log line alone is invisible to
+        # most users. Same notification-id scheme as learned/cancelled so
+        # it is dismissed when the next session arms.
         try:
             await self.hass.services.async_call(
-                "switch",
-                "turn_off",
-                {"entity_id": self.learning_switch_entity_id},
-                blocking=True,
+                "persistent_notification",
+                "create",
+                {
+                    "notification_id": (
+                        f"openirblaster_timeout_{self.config_entry_id}"
+                    ),
+                    "title": "OpenIRBlaster - Learning Timed Out",
+                    "message": (
+                        f"No IR code was received within "
+                        f"{self._active_timeout} seconds. Point the remote "
+                        f"at the device and try again."
+                    ),
+                },
             )
         except Exception as err:
-            _LOGGER.error("Failed to disable learning mode: %s", err)
+            _LOGGER.debug("Failed to create timeout notification: %s", err)
 
         self._state = STATE_TIMEOUT
+        self._notify_state_change()
+
+    async def async_cancel_learning(self) -> None:
+        """Cancel an in-progress (ARMED) session at the user's request.
+
+        Turns learning mode off, tears down listeners and the timeout, and
+        transitions to CANCELLED without the firmware-issue notification
+        that internal validation cancels produce. No-op when not ARMED.
+
+        The _capture_finalized guard mirrors the timeout handler: a capture
+        can commit while the session is still nominally ARMED (the finalize
+        task is suspended awaiting the network switch turn-off). The
+        committed capture wins; cancelling then would stomp RECEIVED with
+        CANCELLED and destroy the captured code.
+        """
+        if self._state != STATE_ARMED or self._capture_finalized:
+            return
+
+        _LOGGER.info("Learning session cancelled by user")
+
+        self._teardown_listeners_and_timeout()
+        await self._async_turn_off_learning_mode()
+
+        self._state = STATE_CANCELLED
         self._notify_state_change()
 
     async def _async_cancel(self, reason: str) -> None:
         """Cancel the learning session."""
         _LOGGER.info("Cancelling learning session: %s", reason)
 
-        # Cancel timeout
-        self._cancel_timeout()
-
-        # Unsubscribe listeners and cancel any pending replay task.
-        if self._event_listener:
-            self._event_listener()
-            self._event_listener = None
-        if self._state_listener:
-            self._state_listener()
-            self._state_listener = None
-        self._cancel_pending_replay_tasks()
+        # Cancel the timeout, unsubscribe listeners, and cancel any pending
+        # replay task.
+        self._teardown_listeners_and_timeout()
 
         # Disable learning mode
-        try:
-            await self.hass.services.async_call(
-                "switch",
-                "turn_off",
-                {"entity_id": self.learning_switch_entity_id},
-                blocking=True,
-            )
-        except Exception as err:
-            _LOGGER.error("Failed to disable learning mode: %s", err)
+        await self._async_turn_off_learning_mode()
 
         # Surface the cancel to the user. Validation failures (bad JSON,
         # bogus carrier, oversized pulse array) are silent otherwise; users
@@ -786,37 +863,13 @@ class LearningSession:
         ``CANCELLED`` / ``RECEIVED`` states and never finalized their
         listeners due to an error path.
         """
-        # Dismiss both the "code learned" success notification and the
-        # "learning cancelled" failure notification. Either may be stale and
-        # we don't want them lingering past an explicit dismissal.
-        await self.hass.services.async_call(
-            "persistent_notification",
-            "dismiss",
-            {
-                "notification_id": f"openirblaster_learned_{self.config_entry_id}",
-            },
-        )
-        await self.hass.services.async_call(
-            "persistent_notification",
-            "dismiss",
-            {
-                "notification_id": (
-                    f"openirblaster_cancelled_{self.config_entry_id}"
-                ),
-            },
-        )
+        # Dismiss any session notifications (learned / cancelled / timeout);
+        # all may be stale and should not linger past an explicit dismissal.
+        await self._async_dismiss_notifications()
 
-        # Cancel any lingering timeout
-        self._cancel_timeout()
-
-        # Unsubscribe listeners and cancel any pending replay task.
-        if self._event_listener:
-            self._event_listener()
-            self._event_listener = None
-        if self._state_listener:
-            self._state_listener()
-            self._state_listener = None
-        self._cancel_pending_replay_tasks()
+        # Cancel any lingering timeout, unsubscribe listeners, and cancel
+        # any pending replay task.
+        self._teardown_listeners_and_timeout()
 
         self._pending_code = None
         self._capture_finalized = False
@@ -825,17 +878,27 @@ class LearningSession:
 
     async def async_cleanup(self) -> None:
         """Clean up resources."""
-        self._cancel_timeout()
+        was_armed = self._state == STATE_ARMED
 
-        if self._event_listener:
-            self._event_listener()
-            self._event_listener = None
-
-        if self._state_listener:
-            self._state_listener()
-            self._state_listener = None
-
-        self._cancel_pending_replay_tasks()
+        self._teardown_listeners_and_timeout()
 
         # Clear all callbacks to prevent orphaned references
         self._callbacks.clear()
+
+        if was_armed:
+            # Best-effort: do not leave the device stuck in learning mode
+            # when the entry unloads mid-session (reload, HA shutdown).
+            # Errors are swallowed; the device may already be offline.
+            try:
+                await self.hass.services.async_call(
+                    "switch",
+                    "turn_off",
+                    {"entity_id": self.learning_switch_entity_id},
+                    blocking=True,
+                )
+            except Exception as err:
+                _LOGGER.debug(
+                    "Best-effort learning-mode turn-off during cleanup "
+                    "failed: %s",
+                    err,
+                )

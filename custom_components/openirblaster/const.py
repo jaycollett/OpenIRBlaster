@@ -38,6 +38,7 @@ STORAGE_KEY_PREFIX = "openirblaster_"
 
 # Services
 SERVICE_LEARN_START = "learn_start"
+SERVICE_LEARN_CANCEL = "learn_cancel"
 SERVICE_SEND_CODE = "send_code"
 SERVICE_DELETE_CODE = "delete_code"
 SERVICE_RENAME_CODE = "rename_code"
@@ -60,11 +61,24 @@ ATTR_UPDATED_AT = "updated_at"
 ATTR_TAGS = "tags"
 ATTR_NOTES = "notes"
 
+# Event entity event types
+EVENT_TYPE_CODE_LEARNED = "code_learned"
+EVENT_TYPE_CODE_SAVED = "code_saved"
+
+# Dispatcher signals (per-entry; format with entry_id).
+# SIGNAL_CODE_ADDED carries the new code dict; the button platform adds a
+# CodeButton and the last-learned sensors refresh their storage-backed
+# values. SIGNAL_CODE_RENAMED carries (code_id, new_name); the matching
+# CodeButton updates its name in place. Both replace full entry reloads.
+SIGNAL_CODE_ADDED = DOMAIN + "_{entry_id}_code_added"
+SIGNAL_CODE_RENAMED = DOMAIN + "_{entry_id}_code_renamed"
+
 # Entity unique ID patterns
 UNIQUE_ID_LEARN_BUTTON = "{entry_id}_learn"
 UNIQUE_ID_SEND_LAST_BUTTON = "{entry_id}_send_last"
 UNIQUE_ID_CODE_BUTTON = "{entry_id}_{code_id}"
 UNIQUE_ID_CODE_NAME_INPUT = "{entry_id}_code_name_input"
+UNIQUE_ID_CODE_ACTIVITY_EVENT = "{entry_id}_code_activity"
 UNIQUE_ID_LAST_LEARNED_NAME = "{entry_id}_last_learned_name"
 UNIQUE_ID_LAST_LEARNED_AT = "{entry_id}_last_learned_at"
 UNIQUE_ID_LAST_LEARNED_LEN = "{entry_id}_last_learned_len"

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import AsyncGenerator
 from unittest.mock import AsyncMock
 
 import pytest
@@ -27,21 +28,38 @@ from custom_components.openirblaster.learning import LearnedCode, LearningSessio
 
 
 @pytest.fixture
-def learning_session(hass: HomeAssistant) -> LearningSession:
-    """Create a learning session fixture."""
-    return LearningSession(
+async def learning_session(
+    hass: HomeAssistant,
+) -> AsyncGenerator[LearningSession, None]:
+    """Create a learning session fixture.
+
+    Tears the session down at test end. Sessions armed via
+    async_start_learning schedule a timeout via async_call_later; a test
+    that ends with the session still ARMED would otherwise leave a
+    lingering timer, which HA's strict test plugin fails at teardown.
+    async_cleanup is idempotent, so tests that already clean up (or drive
+    the session to a terminal state) are unaffected.
+    """
+    session = LearningSession(
         hass=hass,
         config_entry_id="test_entry",
         device_id="openirblaster-test123",
         learning_switch_entity_id="switch.openirblaster_test_ir_learning_mode",
         timeout=5,  # Short timeout for tests
     )
+    yield session
+    await session.async_cleanup()
 
 
 @pytest.fixture
-def learning_session_with_mac(hass: HomeAssistant) -> LearningSession:
-    """Create a learning session fixture with MAC address."""
-    return LearningSession(
+async def learning_session_with_mac(
+    hass: HomeAssistant,
+) -> AsyncGenerator[LearningSession, None]:
+    """Create a learning session fixture with MAC address.
+
+    Tears the session down at test end (see learning_session).
+    """
+    session = LearningSession(
         hass=hass,
         config_entry_id="test_entry",
         device_id="openirblaster-test123",
@@ -49,6 +67,8 @@ def learning_session_with_mac(hass: HomeAssistant) -> LearningSession:
         mac_address="AA:BB:CC:DD:EE:FF",
         timeout=5,  # Short timeout for tests
     )
+    yield session
+    await session.async_cleanup()
 
 
 async def test_initial_state(learning_session: LearningSession) -> None:
@@ -1169,3 +1189,153 @@ async def test_invalid_pulses_json_sets_finalized_flag_synchronously(
     # No valid code committed; session cancelled, not received.
     assert learning_session.pending_code is None
     assert learning_session.state == STATE_CANCELLED
+
+
+# ---------------------------------------------------------------------------
+# QA batch: terminal-state restart, user cancel, cleanup turn-off, timeout
+# notification.
+# ---------------------------------------------------------------------------
+
+
+async def test_start_learning_after_timeout_resets_and_proceeds(
+    hass: HomeAssistant, learning_session: LearningSession
+) -> None:
+    """A session in TIMEOUT can be re-armed directly (no manual reset)."""
+    hass.services.async_register("switch", "turn_on", AsyncMock())
+    hass.services.async_register("switch", "turn_off", AsyncMock())
+
+    learning_session._state = STATE_TIMEOUT
+
+    assert await learning_session.async_start_learning() is True
+    assert learning_session.state == STATE_ARMED
+
+
+async def test_start_learning_after_cancelled_resets_and_proceeds(
+    hass: HomeAssistant, learning_session: LearningSession
+) -> None:
+    """A session in CANCELLED can be re-armed directly."""
+    hass.services.async_register("switch", "turn_on", AsyncMock())
+    hass.services.async_register("switch", "turn_off", AsyncMock())
+
+    learning_session._state = STATE_CANCELLED
+
+    assert await learning_session.async_start_learning() is True
+    assert learning_session.state == STATE_ARMED
+
+
+async def test_start_learning_rejected_with_unsaved_pending_code(
+    hass: HomeAssistant, learning_session: LearningSession
+) -> None:
+    """RECEIVED with an unsaved pending code is rejected (data safety)."""
+    hass.services.async_register("switch", "turn_on", AsyncMock())
+
+    learning_session._state = STATE_RECEIVED
+    learning_session._pending_code = LearnedCode(
+        carrier_hz=38000,
+        pulses=[9000, -4500],
+        timestamp="2026-01-12T14:30:00-05:00",
+        device_id="openirblaster-test123",
+    )
+
+    assert await learning_session.async_start_learning() is False
+    assert learning_session.state == STATE_RECEIVED
+    assert learning_session.pending_code is not None
+
+
+async def test_cancel_learning_turns_off_switch_and_cancels(
+    hass: HomeAssistant, learning_session: LearningSession
+) -> None:
+    """User cancel of an ARMED session disables learning mode."""
+    turn_off_calls = []
+
+    async def mock_turn_off(call):
+        turn_off_calls.append(call)
+
+    hass.services.async_register("switch", "turn_on", AsyncMock())
+    hass.services.async_register("switch", "turn_off", mock_turn_off)
+
+    await learning_session.async_start_learning()
+    assert learning_session.state == STATE_ARMED
+
+    await learning_session.async_cancel_learning()
+
+    assert learning_session.state == STATE_CANCELLED
+    assert len(turn_off_calls) == 1
+    assert learning_session._event_listener is None
+    assert learning_session._timeout_unsub is None
+
+
+async def test_cancel_learning_noop_when_not_armed(
+    hass: HomeAssistant, learning_session: LearningSession
+) -> None:
+    """User cancel is a no-op outside ARMED."""
+    assert learning_session.state == STATE_IDLE
+    await learning_session.async_cancel_learning()
+    assert learning_session.state == STATE_IDLE
+
+
+async def test_cleanup_while_armed_turns_off_switch(
+    hass: HomeAssistant, learning_session: LearningSession
+) -> None:
+    """Cleanup of an ARMED session best-effort disables learning mode."""
+    turn_off_calls = []
+
+    async def mock_turn_off(call):
+        turn_off_calls.append(call)
+
+    hass.services.async_register("switch", "turn_on", AsyncMock())
+    hass.services.async_register("switch", "turn_off", mock_turn_off)
+
+    await learning_session.async_start_learning()
+    assert learning_session.state == STATE_ARMED
+
+    await learning_session.async_cleanup()
+
+    assert len(turn_off_calls) == 1
+    assert (
+        turn_off_calls[0].data["entity_id"]
+        == "switch.openirblaster_test_ir_learning_mode"
+    )
+
+
+async def test_cleanup_while_armed_swallows_switch_errors(
+    hass: HomeAssistant, learning_session: LearningSession
+) -> None:
+    """Cleanup must not raise even when the turn-off fails (shutdown)."""
+    hass.services.async_register("switch", "turn_on", AsyncMock())
+    # No switch.turn_off registered: the call raises ServiceNotFound,
+    # which cleanup must swallow.
+
+    await learning_session.async_start_learning()
+    assert learning_session.state == STATE_ARMED
+
+    await learning_session.async_cleanup()  # must not raise
+    assert learning_session._event_listener is None
+
+
+async def test_timeout_creates_persistent_notification(
+    hass: HomeAssistant, learning_session: LearningSession
+) -> None:
+    """A learning timeout surfaces a persistent notification."""
+    notifications = []
+
+    async def mock_create(call):
+        notifications.append(call)
+
+    hass.services.async_register("switch", "turn_on", AsyncMock())
+    hass.services.async_register("switch", "turn_off", AsyncMock())
+    hass.services.async_register("persistent_notification", "create", mock_create)
+
+    await learning_session.async_start_learning(timeout=1)
+    await asyncio.sleep(1.3)
+
+    assert learning_session.state == STATE_TIMEOUT
+    timeout_notifications = [
+        call
+        for call in notifications
+        if call.data["notification_id"] == "openirblaster_timeout_test_entry"
+    ]
+    assert len(timeout_notifications) == 1
+    # The message reports the timeout that actually governed the session
+    # (the per-call override, not the session default).
+    assert "1 seconds" in timeout_notifications[0].data["message"]

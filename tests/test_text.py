@@ -60,27 +60,27 @@ async def test_min_and_max_length(mock_config_entry_data: dict) -> None:
     assert text_entity.native_max == 100
 
 
-async def test_assigned_to_controls_device_with_mac(
+async def test_assigned_to_main_device_with_mac(
     mock_config_entry_data_with_mac: dict,
 ) -> None:
-    """When MAC is available, the entity is attached to the MAC-based controls device."""
+    """When MAC is available, the entity is attached to the MAC-based main device."""
     entry = _make_entry(mock_config_entry_data_with_mac)
     text_entity = OpenIRBlasterCodeNameText(entry)
 
     normalized_mac = mock_config_entry_data_with_mac[CONF_MAC_ADDRESS].lower().replace(":", "")
-    expected_identifier = (DOMAIN, f"{normalized_mac}_controls")
+    expected_identifier = (DOMAIN, normalized_mac)
     assert expected_identifier in text_entity._attr_device_info["identifiers"]
 
 
-async def test_assigned_to_controls_device_without_mac(
+async def test_assigned_to_main_device_without_mac(
     mock_config_entry_data: dict,
 ) -> None:
-    """When no MAC is set, fall back to device_id for the controls identifier."""
+    """When no MAC is set, fall back to device_id for the main identifier."""
     entry = _make_entry(mock_config_entry_data)
     text_entity = OpenIRBlasterCodeNameText(entry)
 
     device_id = mock_config_entry_data[CONF_DEVICE_ID]
-    expected_identifier = (DOMAIN, f"{device_id}_controls")
+    expected_identifier = (DOMAIN, device_id)
     assert expected_identifier in text_entity._attr_device_info["identifiers"]
 
 

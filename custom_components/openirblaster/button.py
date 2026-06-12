@@ -4,12 +4,19 @@ from __future__ import annotations
 
 import logging
 
+from typing import Any
+
 from homeassistant.components.button import ButtonEntity
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.const import EntityCategory
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ServiceNotFound
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.helpers.dispatcher import (
+    async_dispatcher_connect,
+    async_dispatcher_send,
+)
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import (
@@ -20,9 +27,13 @@ from .const import (
     CONF_DEVICE_ID,
     CONF_MAC_ADDRESS,
     DOMAIN,
+    SIGNAL_CODE_ADDED,
+    SIGNAL_CODE_RENAMED,
     STATE_ARMED,
+    STATE_CANCELLED,
     STATE_IDLE,
     STATE_RECEIVED,
+    STATE_TIMEOUT,
     UNIQUE_ID_CODE_BUTTON,
     UNIQUE_ID_CODE_NAME_INPUT,
     UNIQUE_ID_LEARN_BUTTON,
@@ -93,19 +104,42 @@ async def async_setup_entry(
     )
     async_add_entities(entities)
 
+    # Dynamically add a CodeButton when a code is saved, instead of
+    # reloading the whole entry (which would tear down the learning
+    # session mid-flight).
+    @callback
+    def _async_add_code_button(code: dict[str, Any]) -> None:
+        _LOGGER.debug(
+            "Adding button for newly saved code: %s", code.get(ATTR_CODE_ID)
+        )
+        async_add_entities(
+            [
+                CodeButton(
+                    entry,
+                    code[ATTR_CODE_ID],
+                    code[ATTR_CODE_NAME],
+                    code[ATTR_CARRIER_HZ],
+                    code[ATTR_PULSES],
+                )
+            ]
+        )
+
+    entry.async_on_unload(
+        async_dispatcher_connect(
+            hass,
+            SIGNAL_CODE_ADDED.format(entry_id=entry.entry_id),
+            _async_add_code_button,
+        )
+    )
+
 
 class OpenIRBlasterButtonBase(ButtonEntity):
     """Base class for OpenIRBlaster buttons."""
 
     _attr_has_entity_name = True
 
-    def __init__(self, entry: ConfigEntry, use_controls_device: bool = False) -> None:
-        """Initialize the button.
-
-        Args:
-            entry: Config entry
-            use_controls_device: If True, assigns to controls device; if False, to main device
-        """
+    def __init__(self, entry: ConfigEntry) -> None:
+        """Initialize the button."""
         self._entry = entry
         device_id = entry.data[CONF_DEVICE_ID]
         mac_address = entry.data.get(CONF_MAC_ADDRESS)
@@ -117,10 +151,8 @@ class OpenIRBlasterButtonBase(ButtonEntity):
         else:
             base_identifier = device_id
 
-        # Reference either main device or controls device
-        device_identifier = f"{base_identifier}_controls" if use_controls_device else base_identifier
         self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, device_identifier)},
+            identifiers={(DOMAIN, base_identifier)},
         )
 
 
@@ -128,6 +160,7 @@ class LearnButton(OpenIRBlasterButtonBase):
     """Button to start learning a new IR code."""
 
     _attr_translation_key = "learn"
+    _attr_entity_category = EntityCategory.CONFIG
 
     def __init__(
         self,
@@ -135,7 +168,7 @@ class LearnButton(OpenIRBlasterButtonBase):
         learning_session: LearningSession,
     ) -> None:
         """Initialize the learn button."""
-        super().__init__(entry, use_controls_device=True)  # Assign to controls device
+        super().__init__(entry)
         self._learning_session = learning_session
         self._attr_unique_id = UNIQUE_ID_LEARN_BUTTON.format(entry_id=entry.entry_id)
 
@@ -185,6 +218,9 @@ class LearnButton(OpenIRBlasterButtonBase):
         )
 
         if not text_entity_entry:
+            # Drop any stale name from a previous press so it cannot hijack
+            # a later (e.g. service-armed) capture.
+            self._pending_save_name = None
             _LOGGER.error("Cannot find Code Name text entity in registry")
             return
 
@@ -195,6 +231,9 @@ class LearnButton(OpenIRBlasterButtonBase):
         if (not text_state or not text_state.state or
             text_state.state.strip() == "" or
             text_state.state == "unavailable"):
+            # Drop any stale name from a previous press so it cannot hijack
+            # a later (e.g. service-armed) capture.
+            self._pending_save_name = None
             # Show error notification
             await self.hass.services.async_call(
                 "persistent_notification",
@@ -239,6 +278,16 @@ class LearnButton(OpenIRBlasterButtonBase):
             self._pending_save_name,
             self._save_in_progress,
         )
+        if state in (STATE_TIMEOUT, STATE_CANCELLED):
+            # The press's session ended without a capture. Drop the stored
+            # name so a LATER capture (e.g. armed via the learn_start
+            # service) is not silently auto-saved under this stale name.
+            if self._pending_save_name:
+                _LOGGER.debug(
+                    "Clearing stale pending save name after %s", state
+                )
+                self._pending_save_name = None
+            return
         if state != STATE_RECEIVED or code is None or not self._pending_save_name:
             return
         if self._save_in_progress:
@@ -285,7 +334,7 @@ class LearnButton(OpenIRBlasterButtonBase):
 
             # Save the code
             saved_name = self._pending_save_name
-            await storage.async_add_code(
+            saved_code = await storage.async_add_code(
                 name=saved_name,
                 carrier_hz=pending_code.carrier_hz,
                 pulses=pending_code.pulses,
@@ -293,8 +342,8 @@ class LearnButton(OpenIRBlasterButtonBase):
 
             _LOGGER.info("Saved learned code as: %s", saved_name)
 
-            # Persist last-learned metadata so the sensors survive the
-            # entry reload below and HA restarts.
+            # Persist last-learned metadata so the sensors survive HA
+            # restarts.
             await storage.async_set_last_learned(
                 name=saved_name,
                 timestamp=pending_code.timestamp,
@@ -304,28 +353,19 @@ class LearnButton(OpenIRBlasterButtonBase):
             data.last_learned_timestamp = pending_code.timestamp
             data.last_learned_pulse_count = len(pending_code.pulses)
 
-            # Clear the text entity - find it using entity registry
-            registry = er.async_get(self.hass)
-            text_entity_id = registry.async_get_entity_id(
-                "text",
-                DOMAIN,
-                self._text_entity_unique_id
-            )
-            if text_entity_id:
-                await self.hass.services.async_call(
-                    "text",
-                    "set_value",
-                    {
-                        "entity_id": text_entity_id,
-                        "value": "",
-                    },
-                )
-
-            # Clear the pending code in learning session
+            # Clear the pending code in learning session. (The Code Name
+            # text entity clears itself on the SIGNAL_CODE_ADDED dispatch
+            # below, covering all three save paths.)
             await self._learning_session.async_clear_pending()
 
-            # Reload config entry to create new button entity
-            await self.hass.config_entries.async_reload(self._entry.entry_id)
+            # Add the new code button dynamically and refresh the
+            # last-learned sensors (no entry reload; the learning session
+            # stays alive).
+            async_dispatcher_send(
+                self.hass,
+                SIGNAL_CODE_ADDED.format(entry_id=self._entry.entry_id),
+                saved_code,
+            )
 
         except Exception as err:
             _LOGGER.error("Failed to save learned code: %s", err, exc_info=True)
@@ -341,6 +381,7 @@ class SendLastButton(OpenIRBlasterButtonBase):
     """Button to send the last learned code (for debugging)."""
 
     _attr_translation_key = "send_last"
+    _attr_entity_category = EntityCategory.CONFIG
 
     def __init__(
         self,
@@ -348,7 +389,7 @@ class SendLastButton(OpenIRBlasterButtonBase):
         learning_session: LearningSession,
     ) -> None:
         """Initialize the send last button."""
-        super().__init__(entry, use_controls_device=True)  # Assign to controls device
+        super().__init__(entry)
         self._learning_session = learning_session
         self._attr_unique_id = UNIQUE_ID_SEND_LAST_BUTTON.format(
             entry_id=entry.entry_id
@@ -414,6 +455,25 @@ class CodeButton(OpenIRBlasterButtonBase):
         )
         self._attr_name = name
         self._attr_icon = "mdi:remote"
+
+    async def async_added_to_hass(self) -> None:
+        """Subscribe to rename signals for this entry."""
+        await super().async_added_to_hass()
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass,
+                SIGNAL_CODE_RENAMED.format(entry_id=self._entry.entry_id),
+                self._async_handle_rename,
+            )
+        )
+
+    @callback
+    def _async_handle_rename(self, code_id: str, new_name: str) -> None:
+        """Update the button name in place when its code is renamed."""
+        if code_id != self._code_id:
+            return
+        self._attr_name = new_name
+        self.async_write_ha_state()
 
     async def async_press(self) -> None:
         """Handle the button press."""

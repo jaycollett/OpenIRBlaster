@@ -345,3 +345,248 @@ async def test_setup_entry_backfill_ignores_non_esphome_devices(
         assert await async_setup_entry(hass, entry)
 
     assert CONF_MAC_ADDRESS not in entry.data
+
+
+async def test_offline_entry_does_not_bind_other_devices_service(
+    hass: HomeAssistant,
+) -> None:
+    """An offline blaster must not bind to another blaster's service.
+
+    QA probe: with two blasters where one is offline at boot, the naive
+    pattern fallback bound the offline entry to the other device's
+    send_ir_raw service, so its buttons transmitted from the wrong device.
+    The offline entry must raise ConfigEntryNotReady instead.
+    """
+    import pytest
+
+    from homeassistant.exceptions import ConfigEntryNotReady
+
+    from custom_components.openirblaster.const import (
+        CONF_DEVICE_ID,
+        CONF_ESPHOME_DEVICE_NAME,
+        CONF_ESPHOME_SERVICE_NAME,
+        CONF_LEARNING_SWITCH_ENTITY_ID,
+    )
+
+    # Entry B: online (its service is registered) and bound
+    hass.services.async_register(
+        "esphome", "openirblaster_b_send_ir_raw", AsyncMock()
+    )
+    entry_b = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            CONF_ESPHOME_DEVICE_NAME: "openirblaster_b",
+            CONF_DEVICE_ID: "openirblaster-b",
+            CONF_LEARNING_SWITCH_ENTITY_ID: "switch.openirblaster_b_ir_learning_mode",
+            CONF_ESPHOME_SERVICE_NAME: "openirblaster_b_send_ir_raw",
+        },
+    )
+    entry_b.add_to_hass(hass)
+    with patch(
+        "homeassistant.config_entries.ConfigEntries.async_forward_entry_setups",
+        return_value=True,
+    ):
+        assert await async_setup_entry(hass, entry_b)
+    assert (
+        entry_b.runtime_data.esphome_service_name
+        == "openirblaster_b_send_ir_raw"
+    )
+
+    # Entry A: its device is offline, so its own service is not registered.
+    # The only *_send_ir_raw service belongs to entry B and must not be
+    # grabbed by the pattern fallback.
+    entry_a = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            CONF_ESPHOME_DEVICE_NAME: "openirblaster_a",
+            CONF_DEVICE_ID: "openirblaster-a",
+            CONF_LEARNING_SWITCH_ENTITY_ID: "switch.openirblaster_a_ir_learning_mode",
+            CONF_ESPHOME_SERVICE_NAME: "openirblaster_a_send_ir_raw",
+        },
+    )
+    entry_a.add_to_hass(hass)
+
+    with pytest.raises(ConfigEntryNotReady):
+        await async_setup_entry(hass, entry_a)
+
+    # Entry B keeps its own binding
+    assert (
+        entry_b.runtime_data.esphome_service_name
+        == "openirblaster_b_send_ir_raw"
+    )
+
+
+async def test_setup_resets_learning_switch_left_on(
+    hass: HomeAssistant, mock_config_entry_data: dict
+) -> None:
+    """Setup turns off a learning switch left on by an interrupted session."""
+    switch_entity_id = mock_config_entry_data["learning_switch_entity_id"]
+    hass.states.async_set(switch_entity_id, "on")
+
+    turn_off_calls = []
+
+    async def mock_turn_off(call):
+        turn_off_calls.append(call)
+
+    hass.services.async_register("switch", "turn_off", mock_turn_off)
+
+    entry = MockConfigEntry(domain=DOMAIN, data=mock_config_entry_data)
+    entry.add_to_hass(hass)
+    with patch(
+        "homeassistant.config_entries.ConfigEntries.async_forward_entry_setups",
+        return_value=True,
+    ):
+        assert await async_setup_entry(hass, entry)
+        await hass.async_block_till_done(wait_background_tasks=True)
+
+    assert len(turn_off_calls) == 1
+    assert turn_off_calls[0].data["entity_id"] == switch_entity_id
+
+
+async def test_setup_skips_learning_switch_reset_when_off(
+    hass: HomeAssistant, mock_config_entry_data: dict
+) -> None:
+    """No spurious turn_off when the learning switch is already off."""
+    switch_entity_id = mock_config_entry_data["learning_switch_entity_id"]
+    hass.states.async_set(switch_entity_id, "off")
+
+    turn_off_calls = []
+
+    async def mock_turn_off(call):
+        turn_off_calls.append(call)
+
+    hass.services.async_register("switch", "turn_off", mock_turn_off)
+
+    entry = MockConfigEntry(domain=DOMAIN, data=mock_config_entry_data)
+    entry.add_to_hass(hass)
+    with patch(
+        "homeassistant.config_entries.ConfigEntries.async_forward_entry_setups",
+        return_value=True,
+    ):
+        assert await async_setup_entry(hass, entry)
+        await hass.async_block_till_done(wait_background_tasks=True)
+
+    assert len(turn_off_calls) == 0
+
+
+async def test_setup_clears_stale_service_missing_repair(
+    hass: HomeAssistant, mock_config_entry_data: dict
+) -> None:
+    """Successful discovery clears a lingering missing-service repair."""
+    from homeassistant.helpers import issue_registry as ir
+
+    entry = MockConfigEntry(domain=DOMAIN, data=mock_config_entry_data)
+    entry.add_to_hass(hass)
+
+    # Stale repair from a failed send before the device went offline
+    ir.async_create_issue(
+        hass,
+        DOMAIN,
+        f"esphome_service_missing_{entry.entry_id}",
+        is_fixable=False,
+        severity=ir.IssueSeverity.ERROR,
+        translation_key="esphome_service_missing",
+        translation_placeholders={"name": entry.title},
+    )
+
+    with patch(
+        "homeassistant.config_entries.ConfigEntries.async_forward_entry_setups",
+        return_value=True,
+    ):
+        assert await async_setup_entry(hass, entry)
+
+    issue_registry = ir.async_get(hass)
+    assert (
+        issue_registry.async_get_issue(
+            DOMAIN, f"esphome_service_missing_{entry.entry_id}"
+        )
+        is None
+    )
+
+
+async def test_ambiguous_service_discovery_gets_distinct_message(
+    hass: HomeAssistant,
+) -> None:
+    """Multiple unclaimed candidates produce a reconfigure-oriented CENR."""
+    import pytest
+
+    from homeassistant.exceptions import ConfigEntryNotReady
+
+    from custom_components.openirblaster.const import (
+        CONF_DEVICE_ID,
+        CONF_ESPHOME_DEVICE_NAME,
+        CONF_ESPHOME_SERVICE_NAME,
+        CONF_LEARNING_SWITCH_ENTITY_ID,
+    )
+
+    # Two unclaimed candidate services; neither matches the entry's stored
+    # or constructed name.
+    hass.services.async_register(
+        "esphome", "blaster_alpha_send_ir_raw", AsyncMock()
+    )
+    hass.services.async_register(
+        "esphome", "blaster_beta_send_ir_raw", AsyncMock()
+    )
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            CONF_ESPHOME_DEVICE_NAME: "openirblaster-renamed",
+            CONF_DEVICE_ID: "openirblaster-renamed",
+            CONF_LEARNING_SWITCH_ENTITY_ID: "switch.openirblaster_renamed_ir_learning_mode",
+            CONF_ESPHOME_SERVICE_NAME: "openirblaster_renamed_send_ir_raw",
+        },
+    )
+    entry.add_to_hass(hass)
+
+    with pytest.raises(ConfigEntryNotReady, match="Reconfigure"):
+        await async_setup_entry(hass, entry)
+
+
+async def test_learning_switch_reset_skipped_when_session_armed(
+    hass: HomeAssistant, mock_config_entry_data: dict
+) -> None:
+    """A delayed boot-time turn-off must not disarm an armed session."""
+    from custom_components.openirblaster.const import STATE_ARMED
+
+    switch_entity_id = mock_config_entry_data["learning_switch_entity_id"]
+    hass.states.async_set(switch_entity_id, "on")
+
+    turn_off_calls = []
+
+    async def mock_turn_off(call):
+        turn_off_calls.append(call)
+
+    hass.services.async_register("switch", "turn_off", mock_turn_off)
+
+    # Capture the background task's coroutine instead of running it, so the
+    # session can be armed before the (delayed) reset executes.
+    captured = []
+
+    def capture_background_task(self, hass_, target, name=None, **kwargs):
+        captured.append(target)
+        from unittest.mock import MagicMock
+
+        return MagicMock()
+
+    entry = MockConfigEntry(domain=DOMAIN, data=mock_config_entry_data)
+    entry.add_to_hass(hass)
+    with patch(
+        "homeassistant.config_entries.ConfigEntry.async_create_background_task",
+        autospec=True,
+        side_effect=capture_background_task,
+    ), patch(
+        "homeassistant.config_entries.ConfigEntries.async_forward_entry_setups",
+        return_value=True,
+    ):
+        assert await async_setup_entry(hass, entry)
+
+    assert len(captured) == 1
+
+    # The user arms a session before the delayed reset runs
+    entry.runtime_data.learning_session._state = STATE_ARMED
+
+    await captured[0]
+
+    # The reset bailed instead of disarming the active session
+    assert len(turn_off_calls) == 0

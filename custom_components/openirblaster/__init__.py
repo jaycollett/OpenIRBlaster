@@ -11,6 +11,7 @@ from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers import (
     config_validation as cv,
     device_registry as dr,
+    entity_registry as er,
     issue_registry as ir,
 )
 from homeassistant.helpers.typing import ConfigType
@@ -20,16 +21,21 @@ from .const import (
     CONF_LEARNING_SWITCH_ENTITY_ID,
     CONF_MAC_ADDRESS,
     DOMAIN,
+    STATE_ARMED,
 )
 from .data import OpenIRBlasterConfigEntry, OpenIRBlasterData
-from .helpers import discover_esphome_service
+from .helpers import (
+    AmbiguousEsphomeServiceError,
+    async_clear_send_service_missing,
+    discover_esphome_service,
+)
 from .learning import LearningSession
 from .services import async_setup_services
 from .storage import OpenIRBlasterStorage
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS = [Platform.BUTTON, Platform.SENSOR, Platform.TEXT]
+PLATFORMS = [Platform.BUTTON, Platform.EVENT, Platform.SENSOR, Platform.TEXT]
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
@@ -167,6 +173,52 @@ def _async_flag_ambiguous_backfill(
     )
 
 
+def _async_migrate_controls_device(
+    hass: HomeAssistant, base_identifiers: set[str], main_device_id: str
+) -> None:
+    """Remove the legacy virtual "Controls" device (pre-1.2 layout).
+
+    Older versions grouped management entities on a second registry device
+    keyed by f"{base}_controls". Those entities now live on the main
+    device with entity categories. Re-point any entity registry entries
+    still attached to a Controls device first (removing a device would
+    delete its entities' registry entries, losing user customizations),
+    then remove the Controls device itself.
+
+    Sweeps every candidate base identifier: a pre-MAC install created its
+    Controls device under the device_id identifier, and a MAC back-filled
+    on the upgrade boot would otherwise orphan {device_id}_controls.
+
+    Idempotent: a no-op when no Controls device exists.
+    """
+    device_registry = dr.async_get(hass)
+    entity_registry = er.async_get(hass)
+
+    for base_identifier in base_identifiers:
+        controls_device = device_registry.async_get_device(
+            identifiers={(DOMAIN, f"{base_identifier}_controls")}
+        )
+        if controls_device is None:
+            continue
+
+        for entity in er.async_entries_for_device(
+            entity_registry, controls_device.id, include_disabled_entities=True
+        ):
+            _LOGGER.debug(
+                "Re-pointing entity %s from Controls device to main device",
+                entity.entity_id,
+            )
+            entity_registry.async_update_entity(
+                entity.entity_id, device_id=main_device_id
+            )
+
+        _LOGGER.info(
+            "Removing legacy Controls device %s (entities migrated to main device)",
+            controls_device.id,
+        )
+        device_registry.async_remove_device(controls_device.id)
+
+
 async def async_setup_entry(
     hass: HomeAssistant, entry: OpenIRBlasterConfigEntry
 ) -> bool:
@@ -217,12 +269,23 @@ async def async_setup_entry(
     # ConfigEntryNotReady so HA retries setup with backoff. Raising here,
     # before storage and the learning session exist, means no cleanup is
     # needed on this path.
-    esphome_service_name = discover_esphome_service(hass, entry)
+    try:
+        esphome_service_name = discover_esphome_service(hass, entry)
+    except AmbiguousEsphomeServiceError as err:
+        raise ConfigEntryNotReady(
+            f"Multiple ESPHome send_ir_raw services could belong to device "
+            f"{device_id} and none can be verified as its own. Reconfigure "
+            "the integration to bind the correct device."
+        ) from err
     if not esphome_service_name:
         raise ConfigEntryNotReady(
             f"ESPHome send_ir_raw service for device {device_id} is not yet "
             "available; is the device online?"
         )
+
+    # Discovery succeeded: any lingering missing-service repair from a
+    # failed send is resolved (mirrors the ambiguous-back-fill clearing).
+    async_clear_send_service_missing(hass, entry.entry_id)
 
     # Initialize storage
     storage = OpenIRBlasterStorage(hass, entry.entry_id)
@@ -258,14 +321,14 @@ async def async_setup_entry(
             device_identifier,
         )
 
-    # Register devices in registry
-    # Device 1: Main physical device (for learned IR buttons and ESPHome sensors)
-    # Device 2: Controls device (for learning controls, delete buttons)
+    # Register the single main device. Management entities are grouped via
+    # entity_category (CONFIG/DIAGNOSTIC) on this device; the old virtual
+    # "Controls" device is gone (see _async_migrate_controls_device).
     device_registry = dr.async_get(hass)
 
     # Main physical ESPHome device
     # Use MAC-based identifier if available for stability across ESPHome YAML changes
-    device_registry.async_get_or_create(
+    main_device = device_registry.async_get_or_create(
         config_entry_id=entry.entry_id,
         identifiers={(DOMAIN, device_identifier)},
         name=f"OpenIRBlaster {device_id}",
@@ -273,14 +336,12 @@ async def async_setup_entry(
         model="ESP8266 IR Blaster",
     )
 
-    # Virtual controls device for learning/management
-    device_registry.async_get_or_create(
-        config_entry_id=entry.entry_id,
-        identifiers={(DOMAIN, f"{device_identifier}_controls")},
-        name=f"OpenIRBlaster {device_id} Controls",
-        manufacturer="OpenIRBlaster",
-        model="Learning & Management",
-        via_device=(DOMAIN, device_identifier),  # Shows as connected through main device
+    # One-time migration: remove the legacy virtual "Controls" device.
+    # Sweep both the current (possibly MAC-based) identifier and the
+    # device_id identifier, covering pre-MAC installs whose MAC was only
+    # back-filled on this boot.
+    _async_migrate_controls_device(
+        hass, {device_identifier, device_id}, main_device.id
     )
 
     # Store runtime objects on the config entry
@@ -289,6 +350,44 @@ async def async_setup_entry(
         learning_session=learning_session,
         esphome_service_name=esphome_service_name,
     )
+
+    # Best-effort: a previous run interrupted while ARMED can leave the
+    # device stuck in learning mode. Turn it off in the background so an
+    # offline or slow device cannot delay setup; failures are swallowed.
+    learning_switch_entity_id = entry.data[CONF_LEARNING_SWITCH_ENTITY_ID]
+    switch_state = hass.states.get(learning_switch_entity_id)
+    if switch_state is not None and switch_state.state == "on":
+
+        async def _async_reset_learning_switch() -> None:
+            # Re-check at execution time: a user (or boot automation) may
+            # have armed a session between scheduling and execution; a
+            # delayed turn-off must never disarm an active session.
+            if learning_session.state == STATE_ARMED:
+                _LOGGER.debug(
+                    "Skipping learning-mode reset: a session is armed"
+                )
+                return
+            try:
+                await hass.services.async_call(
+                    "switch",
+                    "turn_off",
+                    {"entity_id": learning_switch_entity_id},
+                    blocking=True,
+                )
+                _LOGGER.info(
+                    "Reset learning mode left on from a previous run (%s)",
+                    learning_switch_entity_id,
+                )
+            except Exception as err:
+                _LOGGER.debug(
+                    "Best-effort learning-mode reset failed: %s", err
+                )
+
+        entry.async_create_background_task(
+            hass,
+            _async_reset_learning_switch(),
+            name=f"openirblaster_learning_reset_{entry.entry_id}",
+        )
 
     # Set up platforms. On failure, tear down the learning session so
     # nothing leaks for the failed entry, then re-raise so HA records the

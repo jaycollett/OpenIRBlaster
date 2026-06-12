@@ -8,6 +8,11 @@
         "default": "mdi:send"
       }
     },
+    "event": {
+      "code_activity": {
+        "default": "mdi:broadcast"
+      }
+    },
     "sensor": {
       "last_learned_name": {
         "default": "mdi:tag"
@@ -23,6 +28,9 @@
   "services": {
     "learn_start": {
       "service": "mdi:remote-tv"
+    },
+    "learn_cancel": {
+      "service": "mdi:cancel"
     },
     "send_code": {
       "service": "mdi:send"

@@ -22,6 +22,15 @@ from .const import (
 _LOGGER = logging.getLogger(__name__)
 
 
+class AmbiguousEsphomeServiceError(Exception):
+    """Multiple unclaimed send_ir_raw services matched; refusing to guess.
+
+    Raised by discover_esphome_service so setup can surface a distinct
+    ConfigEntryNotReady message suggesting reconfiguration, instead of the
+    generic "is the device online?" wording.
+    """
+
+
 @callback
 def async_flag_send_service_missing(hass: HomeAssistant, entry_id: str) -> None:
     """Raise a repair: the ESPHome send service vanished after setup.
@@ -84,6 +93,29 @@ def async_remove_code_entities(
             registry.async_remove(entity_id)
 
 
+def claimed_service_names(
+    hass: HomeAssistant, exclude_entry_id: str | None = None
+) -> set[str]:
+    """Return ESPHome service names claimed by other OpenIRBlaster entries.
+
+    Collects both the stored (config data) and cached (runtime_data) names
+    so the pattern fallback never binds an entry to a service that already
+    belongs to a different blaster.
+    """
+    claimed: set[str] = set()
+    for entry in hass.config_entries.async_entries(DOMAIN):
+        if entry.entry_id == exclude_entry_id:
+            continue
+        stored = entry.data.get(CONF_ESPHOME_SERVICE_NAME)
+        if stored:
+            claimed.add(stored)
+        data = getattr(entry, "runtime_data", None)
+        cached = getattr(data, "esphome_service_name", None)
+        if cached:
+            claimed.add(cached)
+    return claimed
+
+
 def discover_esphome_service(hass: HomeAssistant, entry: ConfigEntry) -> str | None:
     """Discover the ESPHome send_ir_raw service name for a device.
 
@@ -92,7 +124,9 @@ def discover_esphome_service(hass: HomeAssistant, entry: ConfigEntry) -> str | N
     - The ESPHome device was renamed after initial setup
     - Multiple OpenIRBlaster devices exist
 
-    Returns the service name (without 'esphome.' prefix) or None if not found.
+    Returns the service name (without 'esphome.' prefix) or None if not
+    found. Raises AmbiguousEsphomeServiceError when several unclaimed
+    candidates exist and none can be verified as this device's own.
     """
     # Priority 1: Try stored service name from config entry
     stored_service = entry.data.get(CONF_ESPHOME_SERVICE_NAME)
@@ -113,17 +147,39 @@ def discover_esphome_service(hass: HomeAssistant, entry: ConfigEntry) -> str | N
             _LOGGER.debug("Found ESPHome service by device name: %s", expected_service)
             return expected_service
 
-    # Priority 3: Search for any *_send_ir_raw service
-    # This handles cases where ESPHome device was renamed
+    # Priority 3: Search for an unclaimed *_send_ir_raw service. This
+    # handles ESPHome device renames, but must never grab another entry's
+    # service: with two blasters and this one offline at boot, the naive
+    # pattern match would bind this entry to the OTHER device and its
+    # buttons would transmit from the wrong blaster. Only bind when
+    # exactly one unclaimed candidate remains; otherwise return None so
+    # setup raises ConfigEntryNotReady and retries.
     esphome_services = hass.services.async_services().get("esphome", {})
-    for service_name in esphome_services:
-        if service_name.endswith("_send_ir_raw"):
-            _LOGGER.warning(
-                "ESPHome service discovered by pattern matching: %s. "
-                "Consider reconfiguring the integration if this is incorrect.",
-                service_name,
-            )
-            return service_name
+    claimed = claimed_service_names(hass, exclude_entry_id=entry.entry_id)
+    candidates = [
+        service_name
+        for service_name in esphome_services
+        if service_name.endswith("_send_ir_raw") and service_name not in claimed
+    ]
+    if len(candidates) == 1:
+        _LOGGER.warning(
+            "ESPHome service discovered by pattern matching: %s. "
+            "Consider reconfiguring the integration if this is incorrect.",
+            candidates[0],
+        )
+        return candidates[0]
+    if len(candidates) > 1:
+        _LOGGER.warning(
+            "Multiple unclaimed *_send_ir_raw services found for device %s "
+            "(%s); refusing to guess. Reconfigure the integration to bind "
+            "the correct device.",
+            device_name,
+            candidates,
+        )
+        raise AmbiguousEsphomeServiceError(
+            f"Multiple unclaimed send_ir_raw services match {device_name}: "
+            f"{candidates}"
+        )
 
     _LOGGER.error(
         "No ESPHome send_ir_raw service found for device %s. "

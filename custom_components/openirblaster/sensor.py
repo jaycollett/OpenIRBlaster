@@ -7,14 +7,17 @@ from datetime import datetime
 from typing import Any
 
 from homeassistant.components.sensor import RestoreSensor, SensorDeviceClass
-from homeassistant.core import HomeAssistant
+from homeassistant.const import EntityCategory
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import (
     CONF_DEVICE_ID,
     CONF_MAC_ADDRESS,
     DOMAIN,
+    SIGNAL_CODE_ADDED,
     STATE_RECEIVED,
     UNIQUE_ID_LAST_LEARNED_AT,
     UNIQUE_ID_LAST_LEARNED_LEN,
@@ -50,6 +53,7 @@ class OpenIRBlasterSensorBase(RestoreSensor):
     """Base class for OpenIRBlaster sensors."""
 
     _attr_has_entity_name = True
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(
         self,
@@ -88,6 +92,15 @@ class OpenIRBlasterSensorBase(RestoreSensor):
         # async_will_remove_from_hass since register_callback returns no
         # unsubscribe callable.
         self._learning_session.register_callback(self._handle_state_change)
+        # A code save updates the storage-backed last-learned metadata.
+        # Saves no longer reload the entry, so refresh on the save signal.
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass,
+                SIGNAL_CODE_ADDED.format(entry_id=self._entry.entry_id),
+                self._async_handle_code_added,
+            )
+        )
 
     async def async_will_remove_from_hass(self) -> None:
         """Clean up when entity is removed."""
@@ -100,6 +113,11 @@ class OpenIRBlasterSensorBase(RestoreSensor):
             # Store the last learned code so it persists after pending is cleared
             self._last_learned_code = code
             self.async_schedule_update_ha_state(True)
+
+    @callback
+    def _async_handle_code_added(self, code: dict[str, Any]) -> None:
+        """Refresh after a save updated the last-learned metadata."""
+        self.async_schedule_update_ha_state(True)
 
     def _storage_last_learned(self) -> dict[str, Any] | None:
         """Get storage-backed last-learned metadata, if available."""

@@ -28,7 +28,12 @@ The file follows Home Assistant's standard storage envelope. Your code data live
     "device": {
       "config_entry_id": "01HZABCDEFGHIJK",
       "name": "OpenIRBlaster",
-      "device_id": "openirblaster-2ca965"
+      "device_id": "openirblaster-2ca965",
+      "last_learned": {
+        "name": "TV Power",
+        "timestamp": "2026-04-01T12:34:56+00:00",
+        "pulse_count": 8
+      }
     },
     "codes": [
       {
@@ -45,6 +50,29 @@ The file follows Home Assistant's standard storage envelope. Your code data live
   }
 }
 ```
+
+### Schema versioning
+
+The top-level `version` / `minor_version` pair is Home Assistant's storage
+envelope versioning, managed by the integration:
+
+- `version` (major) changes only for breaking schema rewrites.
+- `minor_version` changes for additive schema extensions.
+
+Both are defined in `const.py` (`STORAGE_VERSION` / `STORAGE_MINOR_VERSION`,
+currently `1` / `1`). On load, `storage.OpenIRBlasterStore._async_migrate_func`
+migrates older data forward; data written by a NEWER schema than the
+installed integration knows is rejected rather than silently loaded. When
+editing by hand, leave both version fields exactly as you found them.
+
+### The `device.last_learned` block
+
+`device.last_learned` records the most recently saved code's metadata
+(`name`, `timestamp`, `pulse_count`). It backs the three "Last Learned"
+diagnostic sensors so their values survive Home Assistant restarts. It is
+optional: absent until the first code is saved, and safe to leave untouched
+(or omit) when editing by hand. Do not point it at a code that does not
+exist; it is display metadata only and is overwritten on the next save.
 
 ### Code fields
 

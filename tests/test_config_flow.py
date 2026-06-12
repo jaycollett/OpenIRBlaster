@@ -321,6 +321,7 @@ async def test_options_flow_save_pending_code(
         )
 
     assert result["type"] == FlowResultType.CREATE_ENTRY
+    mock_reload.assert_not_called()
 
     # Verify code was saved
     storage = entry.runtime_data.storage
@@ -427,14 +428,17 @@ async def test_options_flow_save_code_rejects_duplicate_name(
     assert len(storage.get_codes()) == 1
     assert learning_session.pending_code is not None
 
-    # Retrying with a unique name succeeds
-    with patch("homeassistant.config_entries.ConfigEntries.async_reload"):
+    # Retrying with a unique name succeeds (no reload)
+    with patch(
+        "homeassistant.config_entries.ConfigEntries.async_reload"
+    ) as mock_reload:
         result = await hass.config_entries.options.async_configure(
             result["flow_id"],
             user_input={CONF_NAME: "TV Power 2"},
         )
 
     assert result["type"] == FlowResultType.CREATE_ENTRY
+    mock_reload.assert_not_called()
     assert len(storage.get_codes()) == 2
 
 
@@ -617,3 +621,58 @@ async def test_reconfigure_flow_backfills_mac_when_none_stored(
     assert result["reason"] == "reconfigure_successful"
     assert entry.data[CONF_MAC_ADDRESS] == "AA:BB:CC:DD:EE:FF"
     assert entry.data[CONF_DEVICE_ID] == "openirblaster-newname"
+
+
+async def test_reconfigure_flow_mac_unavailable_aborts(
+    hass: HomeAssistant,
+) -> None:
+    """A candidate without a readable MAC aborts with mac_unavailable.
+
+    The entry's hardware identity is MAC-based; when the candidate
+    device's MAC sensor is unavailable or disabled the identity cannot be
+    verified, which is a distinct condition from picking wrong hardware.
+    """
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id="aabbccddeeff",
+        data={
+            CONF_ESPHOME_DEVICE_NAME: "openirblaster-oldname",
+            CONF_DEVICE_ID: "openirblaster-oldname",
+            CONF_LEARNING_SWITCH_ENTITY_ID: "switch.openirblaster_oldname_ir_learning_mode",
+            CONF_ESPHOME_SERVICE_NAME: "openirblaster_oldname_send_ir_raw",
+            CONF_MAC_ADDRESS: "AA:BB:CC:DD:EE:FF",
+        },
+    )
+    entry.add_to_hass(hass)
+
+    # Candidate device WITHOUT a MAC sensor (unavailable/disabled)
+    device_registry = dr.async_get(hass)
+    entity_registry = er.async_get(hass)
+    device = _create_mock_device(
+        hass, device_registry, device_id="openirblaster-newname"
+    )
+    entity_registry.async_get_or_create(
+        "switch",
+        "esphome",
+        f"{device.id}-switch-ir_learning_mode",
+        suggested_object_id="openirblaster_newname_ir_learning_mode",
+        original_name="IR Learning Mode",
+        device_id=device.id,
+    )
+    hass.services.async_register(
+        "esphome", "openirblaster_newname_send_ir_raw", lambda call: None
+    )
+
+    result = await entry.start_reconfigure_flow(hass)
+    assert result["type"] == FlowResultType.FORM
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        user_input={"device": "openirblaster-newname"},
+    )
+
+    assert result["type"] == FlowResultType.ABORT
+    assert result["reason"] == "mac_unavailable"
+
+    # Entry was not rebound
+    assert entry.data[CONF_DEVICE_ID] == "openirblaster-oldname"

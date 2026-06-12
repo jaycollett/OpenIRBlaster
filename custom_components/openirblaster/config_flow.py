@@ -12,6 +12,7 @@ from homeassistant.config_entries import ConfigEntryState, ConfigFlowResult
 from homeassistant.const import CONF_NAME
 from homeassistant.core import callback
 from homeassistant.helpers import device_registry as dr, entity_registry as er, selector
+from homeassistant.helpers.dispatcher import async_dispatcher_send
 
 from .const import (
     ATTR_CODE_ID,
@@ -22,9 +23,10 @@ from .const import (
     CONF_LEARNING_SWITCH_ENTITY_ID,
     CONF_MAC_ADDRESS,
     DOMAIN,
+    SIGNAL_CODE_ADDED,
     STATE_RECEIVED,
 )
-from .helpers import async_remove_code_entities
+from .helpers import async_remove_code_entities, claimed_service_names
 from .learning import LearnedCode
 
 _LOGGER = logging.getLogger(__name__)
@@ -223,10 +225,16 @@ class OpenIRBlasterConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         )
         return None
 
-    def _resolve_esphome_service(self, device_name: str) -> str | None:
+    def _resolve_esphome_service(
+        self, device_name: str, exclude_entry_id: str | None = None
+    ) -> str | None:
         """Discover the ESPHome send_ir_raw service name for a device.
 
         ESPHome registers services as esphome.{device_name}_send_ir_raw.
+        The pattern fallback never picks a service already claimed by
+        another OpenIRBlaster entry, and refuses to guess when more than
+        one unclaimed candidate exists (same rule as
+        helpers.discover_esphome_service).
         """
         esphome_services = self.hass.services.async_services().get("esphome", {})
 
@@ -239,14 +247,30 @@ class OpenIRBlasterConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             )
             return expected_service
 
-        # If not found, search for any *_send_ir_raw service
-        # This handles cases where device naming differs
-        for service_name in esphome_services:
-            if service_name.endswith("_send_ir_raw"):
-                _LOGGER.debug(
-                    "Found ESPHome service by pattern: %s", service_name
-                )
-                return service_name
+        # Pattern fallback (device naming differs): only unclaimed
+        # candidates, and only when the match is unambiguous.
+        claimed = claimed_service_names(
+            self.hass, exclude_entry_id=exclude_entry_id
+        )
+        candidates = [
+            service_name
+            for service_name in esphome_services
+            if service_name.endswith("_send_ir_raw")
+            and service_name not in claimed
+        ]
+        if len(candidates) == 1:
+            _LOGGER.debug(
+                "Found ESPHome service by pattern: %s", candidates[0]
+            )
+            return candidates[0]
+        if len(candidates) > 1:
+            _LOGGER.warning(
+                "Multiple unclaimed *_send_ir_raw services found for device "
+                "%s (%s); refusing to guess.",
+                device_name,
+                candidates,
+            )
+            return None
 
         _LOGGER.warning(
             "ESPHome send_ir_raw service not found for device: %s. "
@@ -393,10 +417,12 @@ class OpenIRBlasterConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 # hardware. Rebinding to different hardware silently would
                 # orphan the stored code library's provenance.
                 if entry.data.get(CONF_MAC_ADDRESS):
-                    if mac_address:
-                        candidate_unique_id = mac_address.lower().replace(":", "")
-                    else:
-                        candidate_unique_id = device_id
+                    if not mac_address:
+                        # The candidate's MAC cannot be determined (sensor
+                        # unavailable or disabled): refuse with a distinct
+                        # reason rather than the misleading wrong_device.
+                        return self.async_abort(reason="mac_unavailable")
+                    candidate_unique_id = mac_address.lower().replace(":", "")
                     if candidate_unique_id != entry.unique_id:
                         return self.async_abort(reason="wrong_device")
 
@@ -407,7 +433,9 @@ class OpenIRBlasterConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     errors["base"] = "entity_not_found"
 
                 if not errors:
-                    esphome_service_name = self._resolve_esphome_service(device_id)
+                    esphome_service_name = self._resolve_esphome_service(
+                        device_id, exclude_entry_id=entry.entry_id
+                    )
                     if not esphome_service_name:
                         errors["base"] = "service_not_found"
 
@@ -501,7 +529,7 @@ class OpenIRBlasterOptionsFlow(config_entries.OptionsFlow):
                 notes = user_input.get("notes", "")
 
                 # Save code to storage
-                await storage.async_add_code(
+                saved_code = await storage.async_add_code(
                     name=name,
                     carrier_hz=pending_code.carrier_hz,
                     pulses=pending_code.pulses,
@@ -509,8 +537,8 @@ class OpenIRBlasterOptionsFlow(config_entries.OptionsFlow):
                     notes=notes,
                 )
 
-                # Persist last-learned metadata so the sensors survive the
-                # reload below and HA restarts.
+                # Persist last-learned metadata so the sensors survive HA
+                # restarts.
                 await storage.async_set_last_learned(
                     name=name,
                     timestamp=pending_code.timestamp,
@@ -520,13 +548,16 @@ class OpenIRBlasterOptionsFlow(config_entries.OptionsFlow):
                 data.last_learned_timestamp = pending_code.timestamp
                 data.last_learned_pulse_count = len(pending_code.pulses)
 
-                # Clear pending code before scheduling the reload so the
-                # session teardown does not race the reload's cleanup.
+                # Clear pending code (resets the session to IDLE).
                 await learning_session.async_clear_pending()
 
-                # Reload entry to create new button entity
-                self.hass.async_create_task(
-                    self.hass.config_entries.async_reload(entry_id)
+                # Add the new code button dynamically and refresh the
+                # last-learned sensors (no entry reload; the learning
+                # session stays alive).
+                async_dispatcher_send(
+                    self.hass,
+                    SIGNAL_CODE_ADDED.format(entry_id=entry_id),
+                    saved_code,
                 )
 
                 return self.async_create_entry(title="", data={})
@@ -616,10 +647,11 @@ class OpenIRBlasterOptionsFlow(config_entries.OptionsFlow):
             if not success:
                 errors["base"] = "code_not_found"
             else:
+                # Removing the registry entry of a live entity also removes
+                # the entity object from HA, so no reload is needed.
                 async_remove_code_entities(
                     self.hass, entry_id, self._selected_code_id
                 )
-                await self.hass.config_entries.async_reload(entry_id)
                 return self.async_create_entry(title="", data={})
 
         data_schema = vol.Schema(

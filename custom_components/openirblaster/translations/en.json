@@ -26,6 +26,7 @@
     "abort": {
       "already_configured": "This device is already configured",
       "no_devices_found": "No OpenIRBlaster devices found. Please ensure:\n1. Your ESPHome device is online and connected\n2. The device uses firmware version 0.1.2 or later\n3. The firmware includes project name 'jaycollett.openirblaster'",
+      "mac_unavailable": "The selected device's MAC address could not be determined (its MAC sensor may be unavailable or disabled), so it cannot be verified as the originally configured hardware. Bring the device fully online and try again.",
       "reconfigure_successful": "Re-configuration was successful",
       "wrong_device": "The selected device is different hardware than the one originally configured. To use a different device, add a new integration entry instead."
     }
@@ -83,6 +84,19 @@
         "name": "Send Last Learned"
       }
     },
+    "event": {
+      "code_activity": {
+        "name": "Code Activity",
+        "state_attributes": {
+          "event_type": {
+            "state": {
+              "code_learned": "Code learned",
+              "code_saved": "Code saved"
+            }
+          }
+        }
+      }
+    },
     "sensor": {
       "last_learned_name": {
         "name": "Last Learned Code Name"
@@ -112,6 +126,20 @@
         "timeout": {
           "name": "Timeout",
           "description": "Learning timeout in seconds (default: 30)."
+        }
+      }
+    },
+    "learn_cancel": {
+      "name": "Cancel Learning",
+      "description": "Cancel an in-progress learning session and reset it to idle.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Config Entry ID",
+          "description": "The config entry ID of the OpenIRBlaster device."
+        },
+        "discard_pending": {
+          "name": "Discard Pending Code",
+          "description": "Also discard a captured code that has not been saved yet."
         }
       }
     },
@@ -207,6 +235,12 @@
     },
     "name_exists": {
       "message": "A code named {name} already exists. Choose a different name."
+    },
+    "pending_code_unsaved": {
+      "message": "A learned code is waiting to be saved. Save it first, or call learn_cancel with discard_pending to drop it."
+    },
+    "code_id_ambiguous": {
+      "message": "IR code {code_id} exists on more than one OpenIRBlaster device. Pass config_entry_id to select which one to delete from."
     }
   },
   "issues": {
