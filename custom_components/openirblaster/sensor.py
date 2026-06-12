@@ -53,6 +53,7 @@ class OpenIRBlasterSensorBase(RestoreSensor):
     """Base class for OpenIRBlaster sensors."""
 
     _attr_has_entity_name = True
+    _attr_should_poll = False
     _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(

@@ -53,6 +53,7 @@ class CodeActivityEvent(EventEntity):
     """
 
     _attr_has_entity_name = True
+    _attr_should_poll = False
     _attr_translation_key = "code_activity"
     _attr_event_types = [EVENT_TYPE_CODE_LEARNED, EVENT_TYPE_CODE_SAVED]
 
