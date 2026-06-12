@@ -9,13 +9,18 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from homeassistant.core import HomeAssistant
 
-from custom_components.openirblaster.button import LearnButton
+from custom_components.openirblaster.button import (
+    CodeButton,
+    LearnButton,
+    SendLastButton,
+)
 from custom_components.openirblaster.const import (
     DOMAIN,
     STATE_IDLE,
     STATE_RECEIVED,
     STATE_TIMEOUT,
 )
+from custom_components.openirblaster.data import OpenIRBlasterData
 from custom_components.openirblaster.learning import LearnedCode, LearningSession
 
 
@@ -48,7 +53,8 @@ async def test_button_entities_created(
             await hass.async_block_till_done()
 
     # Verify button platform was set up
-    assert entry.entry_id in hass.data[DOMAIN]
+    assert entry.runtime_data is not None
+    assert entry.runtime_data.storage is not None
 
 
 async def test_learn_button_press(
@@ -65,7 +71,7 @@ async def test_learn_button_press(
         await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
 
-    learning_session = hass.data[DOMAIN][entry.entry_id]["learning_session"]
+    learning_session = entry.runtime_data.learning_session
 
     # Mock the async_start_learning method
     with patch.object(
@@ -99,6 +105,9 @@ async def test_learn_button_callback_registered_once_across_presses(
     )
 
     button = LearnButton(entry, session)
+    # The callback schedules the save via hass.async_create_task, so the
+    # entity needs its hass reference even outside a platform.
+    button.hass = hass
     # Mock hass access and async_added_to_hass prerequisites
     with patch(
         "homeassistant.helpers.entity.Entity.async_added_to_hass", new=AsyncMock()
@@ -162,8 +171,7 @@ async def test_learn_button_callback_registered_once_across_presses(
 async def test_code_button_press_sends_ir(
     hass: HomeAssistant, mock_config_entry_data: dict
 ) -> None:
-    """Test that pressing a code button sends IR."""
-    # Register the ESPHome service
+    """Pressing a real CodeButton sends the stored payload to ESPHome."""
     calls = []
 
     async def mock_send_ir(call):
@@ -173,15 +181,211 @@ async def test_code_button_press_sends_ir(
         "esphome", "openirblaster_test_send_ir_raw", mock_send_ir
     )
 
-    await hass.services.async_call(
-        "esphome",
-        "openirblaster_test_send_ir_raw",
-        {
-            "carrier_hz": 38000,
-            "code": [9000, -4500, 560, -560],
-        },
-        blocking=True,
+    entry = MockConfigEntry(domain=DOMAIN, data=mock_config_entry_data)
+    entry.add_to_hass(hass)
+    entry.runtime_data = OpenIRBlasterData(
+        storage=MagicMock(),
+        learning_session=MagicMock(),
+        esphome_service_name="openirblaster_test_send_ir_raw",
     )
+
+    button = CodeButton(
+        entry,
+        code_id="tv_power",
+        name="TV Power",
+        carrier_hz=38000,
+        pulses=[9000, -4500, 560, -560],
+    )
+    button.hass = hass
+
+    await button.async_press()
 
     assert len(calls) == 1
     assert calls[0].data["carrier_hz"] == 38000
+    assert calls[0].data["code"] == [9000, -4500, 560, -560]
+
+
+async def test_code_button_press_missing_service_logs_and_does_not_raise(
+    hass: HomeAssistant, mock_config_entry_data: dict, caplog
+) -> None:
+    """A missing ESPHome service must not raise; it logs and sends nothing."""
+    calls = []
+
+    async def mock_send_ir(call):
+        calls.append(call)
+
+    hass.services.async_register(
+        "esphome", "openirblaster_test_send_ir_raw", mock_send_ir
+    )
+
+    entry = MockConfigEntry(domain=DOMAIN, data=mock_config_entry_data)
+    entry.add_to_hass(hass)
+    # No cached service name for this entry (device offline at setup time)
+    entry.runtime_data = OpenIRBlasterData(
+        storage=MagicMock(),
+        learning_session=MagicMock(),
+        esphome_service_name=None,
+    )
+
+    button = CodeButton(
+        entry,
+        code_id="tv_power",
+        name="TV Power",
+        carrier_hz=38000,
+        pulses=[9000, -4500],
+    )
+    button.hass = hass
+
+    await button.async_press()  # must not raise
+
+    assert len(calls) == 0
+    assert "ESPHome service not found" in caplog.text
+
+    # A repair issue is raised so the user sees the problem in the UI
+    from homeassistant.helpers import issue_registry as ir
+
+    issue_registry = ir.async_get(hass)
+    issue = issue_registry.async_get_issue(
+        DOMAIN, f"esphome_service_missing_{entry.entry_id}"
+    )
+    assert issue is not None
+    assert issue.severity == ir.IssueSeverity.ERROR
+    assert issue.is_fixable is False
+
+
+async def test_code_button_successful_send_clears_repair_issue(
+    hass: HomeAssistant, mock_config_entry_data: dict
+) -> None:
+    """A successful send deletes the missing-service repair issue."""
+    from homeassistant.helpers import issue_registry as ir
+
+    calls = []
+
+    async def mock_send_ir(call):
+        calls.append(call)
+
+    hass.services.async_register(
+        "esphome", "openirblaster_test_send_ir_raw", mock_send_ir
+    )
+
+    entry = MockConfigEntry(domain=DOMAIN, data=mock_config_entry_data)
+    entry.add_to_hass(hass)
+    entry.runtime_data = OpenIRBlasterData(
+        storage=MagicMock(),
+        learning_session=MagicMock(),
+        esphome_service_name="openirblaster_test_send_ir_raw",
+    )
+
+    # Pre-existing repair from a previously failed send
+    ir.async_create_issue(
+        hass,
+        DOMAIN,
+        f"esphome_service_missing_{entry.entry_id}",
+        is_fixable=False,
+        severity=ir.IssueSeverity.ERROR,
+        translation_key="esphome_service_missing",
+        translation_placeholders={"name": entry.title},
+    )
+
+    button = CodeButton(
+        entry,
+        code_id="tv_power",
+        name="TV Power",
+        carrier_hz=38000,
+        pulses=[9000, -4500],
+    )
+    button.hass = hass
+
+    await button.async_press()
+
+    assert len(calls) == 1
+    issue_registry = ir.async_get(hass)
+    assert (
+        issue_registry.async_get_issue(
+            DOMAIN, f"esphome_service_missing_{entry.entry_id}"
+        )
+        is None
+    )
+
+
+async def test_send_last_button_press_sends_pending_code(
+    hass: HomeAssistant, mock_config_entry_data: dict
+) -> None:
+    """Pressing a real SendLastButton sends the pending code payload."""
+    calls = []
+
+    async def mock_send_ir(call):
+        calls.append(call)
+
+    hass.services.async_register(
+        "esphome", "openirblaster_test_send_ir_raw", mock_send_ir
+    )
+
+    entry = MockConfigEntry(domain=DOMAIN, data=mock_config_entry_data)
+    entry.add_to_hass(hass)
+    entry.runtime_data = OpenIRBlasterData(
+        storage=MagicMock(),
+        learning_session=MagicMock(),
+        esphome_service_name="openirblaster_test_send_ir_raw",
+    )
+
+    session = LearningSession(
+        hass=hass,
+        config_entry_id=entry.entry_id,
+        device_id="openirblaster-test123",
+        learning_switch_entity_id="switch.openirblaster_test_ir_learning_mode",
+        timeout=30,
+    )
+    session._pending_code = LearnedCode(
+        carrier_hz=40000,
+        pulses=[9000, -4500, 560],
+        timestamp="2026-01-12T14:30:00-05:00",
+        device_id="openirblaster-test123",
+    )
+
+    button = SendLastButton(entry, session)
+    button.hass = hass
+
+    await button.async_press()
+
+    assert len(calls) == 1
+    assert calls[0].data["carrier_hz"] == 40000
+    assert calls[0].data["code"] == [9000, -4500, 560]
+
+
+async def test_send_last_button_press_without_pending_code_is_noop(
+    hass: HomeAssistant, mock_config_entry_data: dict, caplog
+) -> None:
+    """SendLastButton with no pending code warns and sends nothing."""
+    calls = []
+
+    async def mock_send_ir(call):
+        calls.append(call)
+
+    hass.services.async_register(
+        "esphome", "openirblaster_test_send_ir_raw", mock_send_ir
+    )
+
+    entry = MockConfigEntry(domain=DOMAIN, data=mock_config_entry_data)
+    entry.add_to_hass(hass)
+    entry.runtime_data = OpenIRBlasterData(
+        storage=MagicMock(),
+        learning_session=MagicMock(),
+        esphome_service_name="openirblaster_test_send_ir_raw",
+    )
+
+    session = LearningSession(
+        hass=hass,
+        config_entry_id=entry.entry_id,
+        device_id="openirblaster-test123",
+        learning_switch_entity_id="switch.openirblaster_test_ir_learning_mode",
+        timeout=30,
+    )
+
+    button = SendLastButton(entry, session)
+    button.hass = hass
+
+    await button.async_press()  # must not raise
+
+    assert len(calls) == 0
+    assert "No pending code to send" in caplog.text

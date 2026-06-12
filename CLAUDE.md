@@ -6,7 +6,7 @@ Do not make any changes until you have 95% confidence in what you need to build.
 
 Home Assistant custom integration for OpenIRBlaster ESPHome devices. Manages an IR code library (learn, store, name, send). The integration owns all code storage; the ESPHome firmware is "dumb" (learn + transmit only).
 
-**Target:** Python 3.12+, Home Assistant 2024.1+
+**Target:** Python 3.12+, Home Assistant 2024.11+
 
 ## Commands
 

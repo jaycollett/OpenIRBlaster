@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -33,11 +33,78 @@ async def test_setup_entry(
         assert Platform.BUTTON in call_args[1]
         assert Platform.SENSOR in call_args[1]
 
-    # Verify data structure
-    assert DOMAIN in hass.data
-    assert entry.entry_id in hass.data[DOMAIN]
-    assert "storage" in hass.data[DOMAIN][entry.entry_id]
-    assert "learning_session" in hass.data[DOMAIN][entry.entry_id]
+    # Verify runtime data structure
+    assert entry.runtime_data is not None
+    assert entry.runtime_data.storage is not None
+    assert entry.runtime_data.learning_session is not None
+    assert (
+        entry.runtime_data.esphome_service_name
+        == "openirblaster_test_send_ir_raw"
+    )
+
+
+async def test_setup_entry_not_ready_when_esphome_service_missing(
+    hass: HomeAssistant, mock_config_entry_data: dict
+) -> None:
+    """Setup raises ConfigEntryNotReady when the device is not online yet.
+
+    The ESPHome send_ir_raw service is only registered while the device is
+    connected. Raising ConfigEntryNotReady makes HA retry with backoff
+    instead of loading a half-functional entry.
+    """
+    import pytest
+
+    from homeassistant.exceptions import ConfigEntryNotReady
+
+    # The fixture registers the mock ESPHome service; remove it to
+    # simulate the device being offline at setup time.
+    hass.services.async_remove("esphome", "openirblaster_test_send_ir_raw")
+
+    entry = MockConfigEntry(domain=DOMAIN, data=mock_config_entry_data)
+    entry.add_to_hass(hass)
+
+    with pytest.raises(ConfigEntryNotReady):
+        await async_setup_entry(hass, entry)
+
+    # Device comes online; the retry succeeds.
+    hass.services.async_register(
+        "esphome", "openirblaster_test_send_ir_raw", AsyncMock()
+    )
+    with patch(
+        "homeassistant.config_entries.ConfigEntries.async_forward_entry_setups",
+        return_value=True,
+    ):
+        assert await async_setup_entry(hass, entry)
+
+
+async def test_setup_entry_failure_cleans_up(
+    hass: HomeAssistant, mock_config_entry_data: dict
+) -> None:
+    """A platform-setup failure must tear down the learning session.
+
+    If async_forward_entry_setups raises, the learning session must be
+    cleaned up and the exception re-raised; a subsequent retry must then
+    succeed without leaking the first attempt's resources.
+    """
+    import pytest
+
+    entry = MockConfigEntry(domain=DOMAIN, data=mock_config_entry_data)
+    entry.add_to_hass(hass)
+
+    with patch(
+        "homeassistant.config_entries.ConfigEntries.async_forward_entry_setups",
+        side_effect=RuntimeError("platform setup failed"),
+    ):
+        with pytest.raises(RuntimeError):
+            await async_setup_entry(hass, entry)
+
+    # Retry succeeds cleanly after the failure
+    with patch(
+        "homeassistant.config_entries.ConfigEntries.async_forward_entry_setups",
+        return_value=True,
+    ):
+        assert await async_setup_entry(hass, entry)
+    assert entry.runtime_data is not None
 
 
 async def test_unload_entry(
@@ -53,6 +120,8 @@ async def test_unload_entry(
     ):
         await async_setup_entry(hass, entry)
 
+    session = entry.runtime_data.learning_session
+
     with patch(
         "homeassistant.config_entries.ConfigEntries.async_unload_platforms",
         return_value=True,
@@ -60,8 +129,10 @@ async def test_unload_entry(
         assert await async_unload_entry(hass, entry)
         mock_unload.assert_called_once()
 
-    # Verify cleanup
-    assert entry.entry_id not in hass.data[DOMAIN]
+    # Verify the learning session was cleaned up
+    assert session._timeout_unsub is None
+    assert session._event_listener is None
+    assert session._callbacks == []
 
 
 async def test_setup_entry_backfills_mac_from_esphome_device(
@@ -90,6 +161,20 @@ async def test_setup_entry_backfills_mac_from_esphome_device(
     entry = MockConfigEntry(domain=DOMAIN, data=mock_config_entry_data)
     entry.add_to_hass(hass)
 
+    # A stale ambiguity repair from a previous setup attempt; a successful
+    # back-fill must clear it.
+    from homeassistant.helpers import issue_registry as ir
+
+    ir.async_create_issue(
+        hass,
+        DOMAIN,
+        f"ambiguous_mac_backfill_{entry.entry_id}",
+        is_fixable=False,
+        severity=ir.IssueSeverity.WARNING,
+        translation_key="ambiguous_mac_backfill",
+        translation_placeholders={"device_id": "openirblaster-test123"},
+    )
+
     with patch(
         "homeassistant.config_entries.ConfigEntries.async_forward_entry_setups",
         return_value=True,
@@ -99,8 +184,17 @@ async def test_setup_entry_backfills_mac_from_esphome_device(
     # Entry data was updated in place with the back-filled MAC
     assert entry.data.get(CONF_MAC_ADDRESS) == "aa:bb:cc:dd:ee:ff"
     # Learning session picked up the back-filled MAC
-    session = hass.data[DOMAIN][entry.entry_id]["learning_session"]
+    session = entry.runtime_data.learning_session
     assert session.mac_address == "aa:bb:cc:dd:ee:ff"
+
+    # The successful back-fill resolved the ambiguity repair
+    issue_registry = ir.async_get(hass)
+    assert (
+        issue_registry.async_get_issue(
+            DOMAIN, f"ambiguous_mac_backfill_{entry.entry_id}"
+        )
+        is None
+    )
 
 
 async def test_setup_entry_mac_backfill_skipped_when_no_esphome_match(
@@ -124,7 +218,7 @@ async def test_setup_entry_mac_backfill_skipped_when_no_esphome_match(
 
     # No MAC was added (nothing to find)
     assert CONF_MAC_ADDRESS not in entry.data
-    session = hass.data[DOMAIN][entry.entry_id]["learning_session"]
+    session = entry.runtime_data.learning_session
     assert session.mac_address is None
 
 
@@ -206,8 +300,19 @@ async def test_setup_entry_backfill_skipped_when_substring_ambiguous(
         assert await async_setup_entry(hass, entry)
 
     assert CONF_MAC_ADDRESS not in entry.data
-    session = hass.data[DOMAIN][entry.entry_id]["learning_session"]
+    session = entry.runtime_data.learning_session
     assert session.mac_address is None
+
+    # The ambiguity is surfaced as a repair issue
+    from homeassistant.helpers import issue_registry as ir
+
+    issue_registry = ir.async_get(hass)
+    issue = issue_registry.async_get_issue(
+        DOMAIN, f"ambiguous_mac_backfill_{entry.entry_id}"
+    )
+    assert issue is not None
+    assert issue.translation_key == "ambiguous_mac_backfill"
+    assert issue.is_fixable is False
 
 
 async def test_setup_entry_backfill_ignores_non_esphome_devices(

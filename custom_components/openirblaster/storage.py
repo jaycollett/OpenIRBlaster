@@ -20,10 +20,43 @@ from .const import (
     ATTR_TAGS,
     ATTR_UPDATED_AT,
     STORAGE_KEY_PREFIX,
+    STORAGE_MINOR_VERSION,
     STORAGE_VERSION,
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+
+class OpenIRBlasterStore(Store[dict[str, Any]]):
+    """Store with schema-migration support for the IR code library."""
+
+    async def _async_migrate_func(
+        self,
+        old_major_version: int,
+        old_minor_version: int,
+        old_data: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Migrate stored data to the current schema.
+
+        Schema changes must bump STORAGE_VERSION (major, breaking) or
+        STORAGE_MINOR_VERSION (minor, additive) in const.py and add an
+        explicit migration step here. The current 1.x schema needs no
+        transformation; anything newer than what this code knows about is
+        rejected rather than silently loaded.
+        """
+        if (
+            old_major_version == STORAGE_VERSION
+            and old_minor_version <= STORAGE_MINOR_VERSION
+        ):
+            # Identity migration: current schema, nothing to transform.
+            return old_data
+
+        raise ValueError(
+            f"Cannot migrate OpenIRBlaster storage from version "
+            f"{old_major_version}.{old_minor_version} to "
+            f"{STORAGE_VERSION}.{STORAGE_MINOR_VERSION}; this version of the "
+            "integration does not know that schema"
+        )
 
 
 class OpenIRBlasterStorage:
@@ -33,10 +66,11 @@ class OpenIRBlasterStorage:
         """Initialize storage."""
         self.hass = hass
         self.entry_id = entry_id
-        self._store = Store(
+        self._store = OpenIRBlasterStore(
             hass,
             STORAGE_VERSION,
             f"{STORAGE_KEY_PREFIX}{entry_id}",
+            minor_version=STORAGE_MINOR_VERSION,
         )
         self._data: dict[str, Any] = {}
 
@@ -200,6 +234,33 @@ class OpenIRBlasterStorage:
         self._data["device"]["device_id"] = device_id
         if name:
             self._data["device"]["name"] = name
+
+        await self.async_save()
+
+    def get_last_learned(self) -> dict[str, Any] | None:
+        """Get persisted metadata about the last learned code.
+
+        Returns a dict with name, timestamp, and pulse_count keys, or None
+        if no code has been learned yet.
+        """
+        return self._data.get("device", {}).get("last_learned")
+
+    async def async_set_last_learned(
+        self, name: str, timestamp: str, pulse_count: int
+    ) -> None:
+        """Persist metadata about the last learned code.
+
+        Stored in the device block so the "last learned" sensors survive
+        the entry reload that follows every save, and HA restarts.
+        """
+        if "device" not in self._data:
+            self._data["device"] = {}
+
+        self._data["device"]["last_learned"] = {
+            "name": name,
+            "timestamp": timestamp,
+            "pulse_count": pulse_count,
+        }
 
         await self.async_save()
 

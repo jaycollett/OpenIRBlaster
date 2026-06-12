@@ -1,6 +1,8 @@
 name: CI
 
 on:
+  push:
+    branches: [master]
   pull_request:
     branches: [master]
 
@@ -18,11 +20,18 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements_dev.txt
 
-      - name: Run tests
-        run: pytest --cov=custom_components.openirblaster
-
       - name: Run linting
         run: ruff check custom_components/openirblaster
+
+      - name: Check translations in sync with strings.json
+        run: |
+          diff \
+            <(python -m json.tool --sort-keys custom_components/openirblaster/strings.json) \
+            <(python -m json.tool --sort-keys custom_components/openirblaster/translations/en.json) \
+            || { echo "::error::strings.json and translations/en.json differ"; exit 1; }
+
+      - name: Run tests
+        run: pytest --cov=custom_components.openirblaster
 
   version-check:
     name: Version Check

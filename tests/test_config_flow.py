@@ -292,7 +292,7 @@ async def test_options_flow_save_pending_code(
     # Simulate a pending learned code
     from custom_components.openirblaster.learning import LearnedCode
 
-    learning_session = hass.data[DOMAIN][entry.entry_id]["learning_session"]
+    learning_session = entry.runtime_data.learning_session
     learning_session._state = STATE_RECEIVED
     learning_session._pending_code = LearnedCode(
         carrier_hz=38000,
@@ -323,9 +323,297 @@ async def test_options_flow_save_pending_code(
     assert result["type"] == FlowResultType.CREATE_ENTRY
 
     # Verify code was saved
-    storage = hass.data[DOMAIN][entry.entry_id]["storage"]
+    storage = entry.runtime_data.storage
     codes = storage.get_codes()
     assert len(codes) == 1
     assert codes[0]["name"] == "TV Power"
     assert codes[0]["carrier_hz"] == 38000
     assert "tv" in codes[0]["tags"]
+
+
+async def test_options_flow_save_code_aborts_when_pending_cleared(
+    hass: HomeAssistant, mock_config_entry_data: dict
+) -> None:
+    """The save form aborts gracefully if the pending code vanished.
+
+    If the pending code is cleared while the form is open (auto-save
+    completed, timeout, racing save), submitting must abort with
+    no_pending_code instead of raising AttributeError ("Unknown error
+    occurred" in the UI).
+    """
+    entry = MockConfigEntry(domain=DOMAIN, data=mock_config_entry_data)
+    entry.add_to_hass(hass)
+
+    with patch(
+        "homeassistant.config_entries.ConfigEntries.async_forward_entry_setups",
+        return_value=True,
+    ):
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    from custom_components.openirblaster.learning import LearnedCode
+
+    learning_session = entry.runtime_data.learning_session
+    learning_session._state = STATE_RECEIVED
+    learning_session._pending_code = LearnedCode(
+        carrier_hz=38000,
+        pulses=[9000, -4500],
+        timestamp="2026-01-12T14:30:00-05:00",
+        device_id="openirblaster-test123",
+    )
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    assert result["type"] == FlowResultType.FORM
+    assert result["step_id"] == "save_code"
+
+    # The pending code disappears while the form is open
+    learning_session._pending_code = None
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        user_input={CONF_NAME: "TV Power"},
+    )
+
+    assert result["type"] == FlowResultType.ABORT
+    assert result["reason"] == "no_pending_code"
+
+
+async def test_options_flow_save_code_rejects_duplicate_name(
+    hass: HomeAssistant, mock_config_entry_data: dict
+) -> None:
+    """The save form rejects a name that already exists in storage."""
+    entry = MockConfigEntry(domain=DOMAIN, data=mock_config_entry_data)
+    entry.add_to_hass(hass)
+
+    with patch(
+        "homeassistant.config_entries.ConfigEntries.async_forward_entry_setups",
+        return_value=True,
+    ):
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    storage = entry.runtime_data.storage
+    await storage.async_add_code(
+        name="TV Power",
+        carrier_hz=38000,
+        pulses=[9000, -4500],
+    )
+
+    from custom_components.openirblaster.learning import LearnedCode
+
+    learning_session = entry.runtime_data.learning_session
+    learning_session._state = STATE_RECEIVED
+    learning_session._pending_code = LearnedCode(
+        carrier_hz=38000,
+        pulses=[9000, -4500, 560, -560],
+        timestamp="2026-01-12T14:30:00-05:00",
+        device_id="openirblaster-test123",
+    )
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    assert result["type"] == FlowResultType.FORM
+    assert result["step_id"] == "save_code"
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        user_input={CONF_NAME: "TV Power"},
+    )
+
+    # Back on the form with a field error; nothing extra was stored and the
+    # pending code survives so the user can pick another name.
+    assert result["type"] == FlowResultType.FORM
+    assert result["step_id"] == "save_code"
+    assert result["errors"] == {"name": "name_exists"}
+    assert len(storage.get_codes()) == 1
+    assert learning_session.pending_code is not None
+
+    # Retrying with a unique name succeeds
+    with patch("homeassistant.config_entries.ConfigEntries.async_reload"):
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"],
+            user_input={CONF_NAME: "TV Power 2"},
+        )
+
+    assert result["type"] == FlowResultType.CREATE_ENTRY
+    assert len(storage.get_codes()) == 2
+
+
+def _create_reconfigure_target_device(
+    hass: HomeAssistant,
+    device_id: str,
+    mac_address: str,
+) -> dr.DeviceEntry:
+    """Create a discoverable device with switch, MAC sensor, and service."""
+    device_registry = dr.async_get(hass)
+    entity_registry = er.async_get(hass)
+
+    device = _create_mock_device(hass, device_registry, device_id=device_id)
+    slug = device_id.replace("-", "_")
+
+    entity_registry.async_get_or_create(
+        "switch",
+        "esphome",
+        f"{device.id}-switch-ir_learning_mode",
+        suggested_object_id=f"{slug}_ir_learning_mode",
+        original_name="IR Learning Mode",
+        device_id=device.id,
+    )
+    mac_entity = entity_registry.async_get_or_create(
+        "sensor",
+        "esphome",
+        f"{device.id}-sensor-mac_address",
+        suggested_object_id=f"{slug}_mac_address",
+        original_name="MAC Address",
+        device_id=device.id,
+    )
+    hass.states.async_set(mac_entity.entity_id, mac_address)
+
+    hass.services.async_register(
+        "esphome", f"{slug}_send_ir_raw", lambda call: None
+    )
+    return device
+
+
+async def test_reconfigure_flow_success(hass: HomeAssistant) -> None:
+    """Reconfigure re-binds the entry after an ESPHome device rename."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id="aabbccddeeff",
+        data={
+            CONF_ESPHOME_DEVICE_NAME: "openirblaster-oldname",
+            CONF_DEVICE_ID: "openirblaster-oldname",
+            CONF_LEARNING_SWITCH_ENTITY_ID: "switch.openirblaster_oldname_ir_learning_mode",
+            CONF_ESPHOME_SERVICE_NAME: "openirblaster_oldname_send_ir_raw",
+            CONF_MAC_ADDRESS: "AA:BB:CC:DD:EE:FF",
+        },
+    )
+    entry.add_to_hass(hass)
+
+    # Same hardware (same MAC), new ESPHome name
+    _create_reconfigure_target_device(
+        hass, "openirblaster-newname", "AA:BB:CC:DD:EE:FF"
+    )
+
+    result = await entry.start_reconfigure_flow(hass)
+    assert result["type"] == FlowResultType.FORM
+    assert result["step_id"] == "reconfigure"
+
+    with patch(
+        "homeassistant.config_entries.ConfigEntries.async_schedule_reload"
+    ):
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            user_input={"device": "openirblaster-newname"},
+        )
+
+    assert result["type"] == FlowResultType.ABORT
+    assert result["reason"] == "reconfigure_successful"
+
+    # Entry data was re-bound to the renamed device
+    assert entry.data[CONF_DEVICE_ID] == "openirblaster-newname"
+    assert entry.data[CONF_ESPHOME_DEVICE_NAME] == "openirblaster-newname"
+    assert (
+        entry.data[CONF_ESPHOME_SERVICE_NAME]
+        == "openirblaster_newname_send_ir_raw"
+    )
+    assert (
+        entry.data[CONF_LEARNING_SWITCH_ENTITY_ID]
+        == "switch.openirblaster_newname_ir_learning_mode"
+    )
+    assert entry.data[CONF_MAC_ADDRESS] == "AA:BB:CC:DD:EE:FF"
+    # Hardware identity unchanged
+    assert entry.unique_id == "aabbccddeeff"
+
+
+async def test_reconfigure_flow_wrong_device_aborts(hass: HomeAssistant) -> None:
+    """Selecting different hardware (different MAC) aborts with wrong_device."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id="aabbccddeeff",
+        data={
+            CONF_ESPHOME_DEVICE_NAME: "openirblaster-oldname",
+            CONF_DEVICE_ID: "openirblaster-oldname",
+            CONF_LEARNING_SWITCH_ENTITY_ID: "switch.openirblaster_oldname_ir_learning_mode",
+            CONF_ESPHOME_SERVICE_NAME: "openirblaster_oldname_send_ir_raw",
+            CONF_MAC_ADDRESS: "AA:BB:CC:DD:EE:FF",
+        },
+    )
+    entry.add_to_hass(hass)
+
+    # Different hardware: different MAC
+    _create_reconfigure_target_device(
+        hass, "openirblaster-other", "11:22:33:44:55:66"
+    )
+
+    result = await entry.start_reconfigure_flow(hass)
+    assert result["type"] == FlowResultType.FORM
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        user_input={"device": "openirblaster-other"},
+    )
+
+    assert result["type"] == FlowResultType.ABORT
+    assert result["reason"] == "wrong_device"
+
+    # Entry was not rebound
+    assert entry.data[CONF_DEVICE_ID] == "openirblaster-oldname"
+    assert entry.data[CONF_MAC_ADDRESS] == "AA:BB:CC:DD:EE:FF"
+
+
+async def test_reconfigure_flow_no_devices_found(hass: HomeAssistant) -> None:
+    """Reconfigure aborts when no OpenIRBlaster devices are discoverable."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id="aabbccddeeff",
+        data={
+            CONF_ESPHOME_DEVICE_NAME: "openirblaster-oldname",
+            CONF_DEVICE_ID: "openirblaster-oldname",
+            CONF_LEARNING_SWITCH_ENTITY_ID: "switch.openirblaster_oldname_ir_learning_mode",
+            CONF_ESPHOME_SERVICE_NAME: "openirblaster_oldname_send_ir_raw",
+            CONF_MAC_ADDRESS: "AA:BB:CC:DD:EE:FF",
+        },
+    )
+    entry.add_to_hass(hass)
+
+    result = await entry.start_reconfigure_flow(hass)
+
+    assert result["type"] == FlowResultType.ABORT
+    assert result["reason"] == "no_devices_found"
+
+
+async def test_reconfigure_flow_backfills_mac_when_none_stored(
+    hass: HomeAssistant,
+) -> None:
+    """An entry without a stored MAC may rebind and back-fill the MAC."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id="openirblaster-oldname",  # device_id-based unique_id
+        data={
+            CONF_ESPHOME_DEVICE_NAME: "openirblaster-oldname",
+            CONF_DEVICE_ID: "openirblaster-oldname",
+            CONF_LEARNING_SWITCH_ENTITY_ID: "switch.openirblaster_oldname_ir_learning_mode",
+            CONF_ESPHOME_SERVICE_NAME: "openirblaster_oldname_send_ir_raw",
+        },
+    )
+    entry.add_to_hass(hass)
+
+    _create_reconfigure_target_device(
+        hass, "openirblaster-newname", "AA:BB:CC:DD:EE:FF"
+    )
+
+    result = await entry.start_reconfigure_flow(hass)
+    assert result["type"] == FlowResultType.FORM
+
+    with patch(
+        "homeassistant.config_entries.ConfigEntries.async_schedule_reload"
+    ):
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            user_input={"device": "openirblaster-newname"},
+        )
+
+    assert result["type"] == FlowResultType.ABORT
+    assert result["reason"] == "reconfigure_successful"
+    assert entry.data[CONF_MAC_ADDRESS] == "AA:BB:CC:DD:EE:FF"
+    assert entry.data[CONF_DEVICE_ID] == "openirblaster-newname"

@@ -7,6 +7,13 @@
         "data": {
           "device": "OpenIRBlaster Device"
         }
+      },
+      "reconfigure": {
+        "title": "Reconfigure OpenIRBlaster",
+        "description": "Select the OpenIRBlaster device this entry should be bound to. Use this after renaming the ESPHome device.",
+        "data": {
+          "device": "OpenIRBlaster Device"
+        }
       }
     },
     "error": {
@@ -18,7 +25,9 @@
     },
     "abort": {
       "already_configured": "This device is already configured",
-      "no_devices_found": "No OpenIRBlaster devices found. Please ensure:\n1. Your ESPHome device is online and connected\n2. The device uses firmware version 0.1.2 or later\n3. The firmware includes project name 'jaycollett.openirblaster'"
+      "no_devices_found": "No OpenIRBlaster devices found. Please ensure:\n1. Your ESPHome device is online and connected\n2. The device uses firmware version 0.1.2 or later\n3. The firmware includes project name 'jaycollett.openirblaster'",
+      "reconfigure_successful": "Re-configuration was successful",
+      "wrong_device": "The selected device is different hardware than the one originally configured. To use a different device, add a new integration entry instead."
     }
   },
   "options": {
@@ -57,10 +66,12 @@
     "abort": {
       "not_loaded": "Integration not loaded",
       "not_implemented": "This feature is not yet implemented",
-      "no_codes": "No IR codes have been saved yet."
+      "no_codes": "No IR codes have been saved yet.",
+      "no_pending_code": "The learned IR code is no longer pending. It may have already been saved, cleared, or timed out."
     },
     "error": {
-      "code_not_found": "The selected code could not be found."
+      "code_not_found": "The selected code could not be found.",
+      "name_exists": "A code with this name already exists. Choose a different name."
     }
   },
   "entity": {
@@ -157,6 +168,59 @@
           "description": "The new name for the code."
         }
       }
+    },
+    "save_pending": {
+      "name": "Save Pending Code",
+      "description": "Save the pending learned IR code with a name.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Config Entry ID",
+          "description": "The config entry ID of the OpenIRBlaster device."
+        },
+        "name": {
+          "name": "Code Name",
+          "description": "Name for the learned IR code."
+        },
+        "tags": {
+          "name": "Tags",
+          "description": "Comma-separated tags for organizing codes (optional)."
+        },
+        "notes": {
+          "name": "Notes",
+          "description": "Optional notes about the code."
+        }
+      }
+    }
+  },
+  "exceptions": {
+    "config_entry_not_found": {
+      "message": "Config entry {config_entry_id} was not found."
+    },
+    "config_entry_not_loaded": {
+      "message": "Config entry {config_entry_id} is not loaded."
+    },
+    "code_not_found": {
+      "message": "IR code {code_id} was not found."
+    },
+    "no_pending_code": {
+      "message": "No pending IR code to save. Learn a code first."
+    },
+    "name_exists": {
+      "message": "A code named {name} already exists. Choose a different name."
+    }
+  },
+  "issues": {
+    "dangling_mac": {
+      "title": "OpenIRBlaster firmware needs an update",
+      "description": "The OpenIRBlaster device {device_id} is sending a corrupted MAC address in its learned-code events, which is a known bug in older firmware. Learning still works via device-name matching, but you should update the device firmware to the latest version."
+    },
+    "ambiguous_mac_backfill": {
+      "title": "Could not identify the OpenIRBlaster's MAC address",
+      "description": "Multiple ESPHome devices match the name {device_id}, so OpenIRBlaster could not determine which MAC address belongs to this entry. The capture-recovery fallback will rely on name matching only. To fix this permanently, reconfigure the integration and select the correct device."
+    },
+    "esphome_service_missing": {
+      "title": "OpenIRBlaster cannot send IR codes",
+      "description": "The ESPHome send service for {name} is no longer available, so IR codes cannot be sent. The device may be offline or was renamed in ESPHome. Check that the device is online, then reload or reconfigure the integration."
     }
   }
 }

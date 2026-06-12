@@ -9,9 +9,16 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from homeassistant.core import Event, HomeAssistant, callback
-from homeassistant.helpers import device_registry as dr, entity_registry as er
-from homeassistant.helpers.event import async_track_state_change_event
+from homeassistant.core import CALLBACK_TYPE, Event, HomeAssistant, callback
+from homeassistant.helpers import (
+    device_registry as dr,
+    entity_registry as er,
+    issue_registry as ir,
+)
+from homeassistant.helpers.event import (
+    async_call_later,
+    async_track_state_change_event,
+)
 
 from .const import (
     ATTR_CARRIER_HZ,
@@ -19,6 +26,7 @@ from .const import (
     ATTR_MAC_ADDRESS,
     ATTR_PULSES_JSON,
     ATTR_TIMESTAMP,
+    DOMAIN,
     EVENT_LEARNED,
     LEARNING_TIMEOUT_SECONDS,
     MAX_PULSE_ARRAY_LENGTH,
@@ -111,7 +119,9 @@ class LearningSession:
         # reconnect; that replay triggers replay_last_ir, which re-fires the
         # event. Once one path finalizes, the other has to bail.
         self._capture_finalized: bool = False
-        self._timeout_handle: asyncio.TimerHandle | None = None
+        # Cancel callable returned by async_call_later for the session
+        # timeout. Call it (via _cancel_timeout) to cancel the deadline.
+        self._timeout_unsub: CALLBACK_TYPE | None = None
         # Pending wait-then-replay tasks scheduled from the marker handler.
         # Tracked so session teardown can cancel them, otherwise we'd leak
         # 500ms-pending tasks that hold a reference to this session.
@@ -157,13 +167,30 @@ class LearningSession:
             except Exception as err:
                 _LOGGER.error("Error in learning session callback: %s", err, exc_info=True)
 
-    async def async_start_learning(self) -> bool:
-        """Start a learning session."""
+    async def async_start_learning(self, timeout: int | None = None) -> bool:
+        """Start a learning session.
+
+        Args:
+            timeout: Optional per-session timeout override in seconds. When
+                None, the session default (``self.timeout``) is used. The
+                override applies to this session only and does not change
+                the default for subsequent sessions.
+        """
         if self._state != STATE_IDLE:
             _LOGGER.warning(
                 "Cannot start learning: session already in state %s", self._state
             )
             return False
+
+        # Claim the session synchronously, before the first await, so a
+        # concurrent start hits the IDLE check above and is rejected.
+        # Without this, two starts could both pass the check; the second
+        # would overwrite the first's listener unsubscribe callable and
+        # leak that bus subscription permanently.
+        self._state = STATE_ARMED
+        self._capture_finalized = False
+
+        session_timeout = timeout if timeout is not None else self.timeout
 
         _LOGGER.info("Starting learning session for device %s", self.device_id)
 
@@ -177,10 +204,10 @@ class LearningSession:
             )
         except Exception as err:
             _LOGGER.error("Failed to enable learning mode: %s", err)
+            # Release the claim. Nothing else was registered yet, so
+            # reverting the state is the only cleanup needed.
+            self._state = STATE_IDLE
             return False
-
-        # Reset capture guard for the new session
-        self._capture_finalized = False
 
         # Subscribe to learned events (primary path)
         self._event_listener = self.hass.bus.async_listen(
@@ -208,14 +235,22 @@ class LearningSession:
                 self.device_id,
             )
 
-        # Set timeout
-        self._timeout_handle = self.hass.loop.call_later(
-            self.timeout, lambda: asyncio.create_task(self._async_handle_timeout())
+        # Set timeout. async_call_later returns a cancel callable and runs
+        # the coroutine as an HA-tracked job when the deadline fires.
+        self._timeout_unsub = async_call_later(
+            self.hass, session_timeout, self._async_handle_timeout
         )
 
-        self._state = STATE_ARMED
+        # State was claimed (ARMED) before the first await; notify now that
+        # the session is fully armed.
         self._notify_state_change()
         return True
+
+    def _cancel_timeout(self) -> None:
+        """Cancel the scheduled learning timeout, if any. Idempotent."""
+        if self._timeout_unsub:
+            self._timeout_unsub()
+            self._timeout_unsub = None
 
     def _resolve_text_sensor_entity_id(self) -> str | None:
         """Locate the capture-marker text_sensor entity_id.
@@ -311,7 +346,13 @@ class LearningSession:
             self._text_sensor_entity_id,
         )
 
-        task = asyncio.create_task(self._async_wait_then_request_replay(marker))
+        # Background task: HA tracks it for shutdown, but block_till_done
+        # does not wait on it (the grace sleep would stall the event loop
+        # drain otherwise). The local set still drives replay-drain logic.
+        task = self.hass.async_create_background_task(
+            self._async_wait_then_request_replay(marker),
+            name=f"openirblaster_replay_wait_{self.config_entry_id}",
+        )
         self._pending_replay_tasks.add(task)
         task.add_done_callback(self._pending_replay_tasks.discard)
 
@@ -392,7 +433,24 @@ class LearningSession:
                 "Falling back to device_id matching for this event.",
                 event_mac_address,
             )
+            # Surface a repair: this is a known bug in older firmware and
+            # the user can fix it by updating the device.
+            ir.async_create_issue(
+                self.hass,
+                DOMAIN,
+                f"dangling_mac_{self.config_entry_id}",
+                is_fixable=False,
+                severity=ir.IssueSeverity.WARNING,
+                translation_key="dangling_mac",
+                translation_placeholders={"device_id": self.device_id},
+            )
             event_mac_address = ""
+        elif event_mac_address:
+            # Firmware is emitting valid MACs; clear any stale repair from
+            # a pre-update capture.
+            ir.async_delete_issue(
+                self.hass, DOMAIN, f"dangling_mac_{self.config_entry_id}"
+            )
 
         is_our_device = False
         mac_comparison_done = False
@@ -486,7 +544,7 @@ class LearningSession:
         if not pulses_json:
             _LOGGER.error("Event payload missing pulses_json")
             self._capture_finalized = True
-            asyncio.create_task(self._async_cancel("Missing pulse data"))
+            self.hass.async_create_task(self._async_cancel("Missing pulse data"))
             return
 
         try:
@@ -494,7 +552,9 @@ class LearningSession:
         except (json.JSONDecodeError, TypeError) as err:
             _LOGGER.error("Failed to parse pulses_json: %s", err)
             self._capture_finalized = True
-            asyncio.create_task(self._async_cancel("Invalid pulse data format"))
+            self.hass.async_create_task(
+                self._async_cancel("Invalid pulse data format")
+            )
             return
 
         # Convert carrier_hz to int if it's a string (ESPHome may send as string)
@@ -504,19 +564,23 @@ class LearningSession:
             except (ValueError, TypeError):
                 _LOGGER.error("Cannot convert carrier_hz to int: %s", carrier_hz)
                 self._capture_finalized = True
-                asyncio.create_task(self._async_cancel("Invalid carrier frequency"))
+                self.hass.async_create_task(
+                    self._async_cancel("Invalid carrier frequency")
+                )
                 return
 
         if not isinstance(carrier_hz, int) or carrier_hz <= 0:
             _LOGGER.error("Invalid carrier_hz in event payload: %s", carrier_hz)
             self._capture_finalized = True
-            asyncio.create_task(self._async_cancel("Invalid carrier frequency"))
+            self.hass.async_create_task(
+                self._async_cancel("Invalid carrier frequency")
+            )
             return
 
         if not isinstance(pulses, list) or len(pulses) == 0:
             _LOGGER.error("Invalid or empty pulses array in event payload")
             self._capture_finalized = True
-            asyncio.create_task(self._async_cancel("Invalid pulse data"))
+            self.hass.async_create_task(self._async_cancel("Invalid pulse data"))
             return
 
         if len(pulses) > MAX_PULSE_ARRAY_LENGTH:
@@ -526,7 +590,7 @@ class LearningSession:
                 MAX_PULSE_ARRAY_LENGTH,
             )
             self._capture_finalized = True
-            asyncio.create_task(
+            self.hass.async_create_task(
                 self._async_cancel(
                     f"Pulse array too large (max {MAX_PULSE_ARRAY_LENGTH})"
                 )
@@ -536,6 +600,11 @@ class LearningSession:
         # Commit capture. Mark finalized immediately so a replay event that
         # races in between here and the async finalizer task bails out.
         self._capture_finalized = True
+        # Cancel the timeout synchronously. The finalize task below also
+        # cancels it (harmless/idempotent), but that task may not run before
+        # the deadline fires; without this, a capture landing right at the
+        # deadline could let the timeout path emit a spurious TIMEOUT state.
+        self._cancel_timeout()
         self._pending_code = LearnedCode(
             carrier_hz=carrier_hz,
             pulses=pulses,
@@ -550,7 +619,7 @@ class LearningSession:
         )
 
         # Clean up and transition to RECEIVED state
-        asyncio.create_task(self._async_finalize_learning())
+        self.hass.async_create_task(self._async_finalize_learning())
 
     def _cancel_pending_replay_tasks(self) -> None:
         """Cancel any in-flight wait-then-replay tasks scheduled by the marker."""
@@ -563,10 +632,8 @@ class LearningSession:
 
     async def _async_finalize_learning(self) -> None:
         """Finalize learning after code received."""
-        # Cancel timeout
-        if self._timeout_handle:
-            self._timeout_handle.cancel()
-            self._timeout_handle = None
+        # Cancel timeout (idempotent; already cancelled at the commit site)
+        self._cancel_timeout()
 
         # Disable learning mode
         try:
@@ -617,9 +684,17 @@ class LearningSession:
                 },
             )
 
-    async def _async_handle_timeout(self) -> None:
-        """Handle learning timeout."""
-        if self._state != STATE_ARMED:
+    async def _async_handle_timeout(self, _now: datetime | None = None) -> None:
+        """Handle learning timeout.
+
+        Args:
+            _now: Fired-at datetime supplied by async_call_later; unused.
+        """
+        # _capture_finalized guards the race where a capture lands just
+        # before the deadline (or while finalize is suspended awaiting the
+        # switch turn-off): the session is still ARMED at that instant, but
+        # the capture has won and the timeout path must be a no-op.
+        if self._state != STATE_ARMED or self._capture_finalized:
             return
 
         _LOGGER.warning("Learning session timed out after %d seconds", self.timeout)
@@ -652,9 +727,7 @@ class LearningSession:
         _LOGGER.info("Cancelling learning session: %s", reason)
 
         # Cancel timeout
-        if self._timeout_handle:
-            self._timeout_handle.cancel()
-            self._timeout_handle = None
+        self._cancel_timeout()
 
         # Unsubscribe listeners and cancel any pending replay task.
         if self._event_listener:
@@ -733,10 +806,8 @@ class LearningSession:
             },
         )
 
-        # Cancel any lingering timeout handle
-        if self._timeout_handle:
-            self._timeout_handle.cancel()
-            self._timeout_handle = None
+        # Cancel any lingering timeout
+        self._cancel_timeout()
 
         # Unsubscribe listeners and cancel any pending replay task.
         if self._event_listener:
@@ -752,15 +823,9 @@ class LearningSession:
         self._state = STATE_IDLE
         self._notify_state_change()
 
-    def clear_pending(self) -> None:
-        """Clear pending code and reset to idle (sync wrapper)."""
-        asyncio.create_task(self.async_clear_pending())
-
     async def async_cleanup(self) -> None:
         """Clean up resources."""
-        if self._timeout_handle:
-            self._timeout_handle.cancel()
-            self._timeout_handle = None
+        self._cancel_timeout()
 
         if self._event_listener:
             self._event_listener()

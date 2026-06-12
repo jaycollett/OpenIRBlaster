@@ -1,0 +1,40 @@
+{
+  "entity": {
+    "button": {
+      "learn": {
+        "default": "mdi:remote-tv"
+      },
+      "send_last": {
+        "default": "mdi:send"
+      }
+    },
+    "sensor": {
+      "last_learned_name": {
+        "default": "mdi:tag"
+      },
+      "last_learned_timestamp": {
+        "default": "mdi:clock"
+      },
+      "last_learned_pulse_count": {
+        "default": "mdi:counter"
+      }
+    }
+  },
+  "services": {
+    "learn_start": {
+      "service": "mdi:remote-tv"
+    },
+    "send_code": {
+      "service": "mdi:send"
+    },
+    "delete_code": {
+      "service": "mdi:delete"
+    },
+    "rename_code": {
+      "service": "mdi:rename-box"
+    },
+    "save_pending": {
+      "service": "mdi:content-save"
+    }
+  }
+}

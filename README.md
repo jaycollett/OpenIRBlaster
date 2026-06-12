@@ -28,7 +28,7 @@ OpenIRBlaster is a purpose-built hardware and software solution for IR control i
 
 ## Requirements
 
-- Home Assistant 2024.1+ (Python 3.12+)
+- Home Assistant 2024.11+ (Python 3.12+)
 - ESPHome device with:
   - IR receiver (TSOP38238 or similar)
   - IR transmitter (LED + transistor)

@@ -7,7 +7,13 @@ import logging
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import device_registry as dr
+from homeassistant.exceptions import ConfigEntryNotReady
+from homeassistant.helpers import (
+    config_validation as cv,
+    device_registry as dr,
+    issue_registry as ir,
+)
+from homeassistant.helpers.typing import ConfigType
 
 from .const import (
     CONF_DEVICE_ID,
@@ -15,18 +21,27 @@ from .const import (
     CONF_MAC_ADDRESS,
     DOMAIN,
 )
+from .data import OpenIRBlasterConfigEntry, OpenIRBlasterData
 from .helpers import discover_esphome_service
 from .learning import LearningSession
-from .services import async_setup_services, async_unload_services
+from .services import async_setup_services
 from .storage import OpenIRBlasterStorage
 
 _LOGGER = logging.getLogger(__name__)
 
 PLATFORMS = [Platform.BUTTON, Platform.SENSOR, Platform.TEXT]
 
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
+
+
+async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
+    """Set up the OpenIRBlaster integration (register services once)."""
+    await async_setup_services(hass)
+    return True
+
 
 def _lookup_mac_from_esphome_device(
-    hass: HomeAssistant, device_id: str
+    hass: HomeAssistant, device_id: str, entry_id: str
 ) -> str | None:
     """Locate the MAC address of an ESPHome device from the HA device registry.
 
@@ -112,6 +127,7 @@ def _lookup_mac_from_esphome_device(
             device_id,
             len(exact_with_mac),
         )
+        _async_flag_ambiguous_backfill(hass, entry_id, device_id)
         return None
 
     # Fall back to substring matches only when unambiguous.
@@ -130,12 +146,30 @@ def _lookup_mac_from_esphome_device(
             device_id,
             len(substring_with_mac),
         )
+        _async_flag_ambiguous_backfill(hass, entry_id, device_id)
         return None
 
     return None
 
 
-async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+def _async_flag_ambiguous_backfill(
+    hass: HomeAssistant, entry_id: str, device_id: str
+) -> None:
+    """Raise a repair: the MAC back-fill matcher cannot pick a device."""
+    ir.async_create_issue(
+        hass,
+        DOMAIN,
+        f"ambiguous_mac_backfill_{entry_id}",
+        is_fixable=False,
+        severity=ir.IssueSeverity.WARNING,
+        translation_key="ambiguous_mac_backfill",
+        translation_placeholders={"device_id": device_id},
+    )
+
+
+async def async_setup_entry(
+    hass: HomeAssistant, entry: OpenIRBlasterConfigEntry
+) -> bool:
     """Set up OpenIRBlaster from a config entry."""
     _LOGGER.info("Setting up OpenIRBlaster integration for entry %s", entry.entry_id)
 
@@ -150,7 +184,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # resolver path without requiring the user to remove and re-add the
     # integration.
     if not mac_address:
-        backfilled_mac = _lookup_mac_from_esphome_device(hass, device_id)
+        backfilled_mac = _lookup_mac_from_esphome_device(
+            hass, device_id, entry.entry_id
+        )
         if backfilled_mac:
             _LOGGER.info(
                 "Back-filled MAC address %s for device %s from ESPHome device "
@@ -168,6 +204,25 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 "fallback will rely on slug heuristics only.",
                 device_id,
             )
+
+    if mac_address:
+        # A MAC is known (stored or just back-filled), so any earlier
+        # ambiguous-back-fill repair is resolved.
+        ir.async_delete_issue(
+            hass, DOMAIN, f"ambiguous_mac_backfill_{entry.entry_id}"
+        )
+
+    # Discover the ESPHome service name before building any state. If the
+    # device is not online yet (its API services are not registered), raise
+    # ConfigEntryNotReady so HA retries setup with backoff. Raising here,
+    # before storage and the learning session exist, means no cleanup is
+    # needed on this path.
+    esphome_service_name = discover_esphome_service(hass, entry)
+    if not esphome_service_name:
+        raise ConfigEntryNotReady(
+            f"ESPHome send_ir_raw service for device {device_id} is not yet "
+            "available; is the device online?"
+        )
 
     # Initialize storage
     storage = OpenIRBlasterStorage(hass, entry.entry_id)
@@ -228,30 +283,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         via_device=(DOMAIN, device_identifier),  # Shows as connected through main device
     )
 
-    # Discover ESPHome service name (with runtime discovery for resilience)
-    esphome_service_name = discover_esphome_service(hass, entry)
-    if not esphome_service_name:
-        _LOGGER.warning(
-            "ESPHome service not found during setup. IR transmission will not work "
-            "until the ESPHome device is online."
-        )
+    # Store runtime objects on the config entry
+    entry.runtime_data = OpenIRBlasterData(
+        storage=storage,
+        learning_session=learning_session,
+        esphome_service_name=esphome_service_name,
+    )
 
-    # Store objects in hass.data
-    hass.data.setdefault(DOMAIN, {})
-
-    hass.data[DOMAIN][entry.entry_id] = {
-        "storage": storage,
-        "learning_session": learning_session,
-        "config_entry": entry,
-        "esphome_service_name": esphome_service_name,
-    }
-
-    # Set up platforms
-    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-
-    # Set up services (only once, first entry)
-    if len(hass.data[DOMAIN]) == 1:
-        await async_setup_services(hass)
+    # Set up platforms. On failure, tear down the learning session so
+    # nothing leaks for the failed entry, then re-raise so HA records the
+    # setup error.
+    try:
+        await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    except Exception:
+        await learning_session.async_cleanup()
+        raise
 
     # Note: No update listener needed - our integration doesn't have options that require reload
     # Config entry rename is handled automatically by Home Assistant core
@@ -260,7 +306,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return True
 
 
-async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+async def async_unload_entry(
+    hass: HomeAssistant, entry: OpenIRBlasterConfigEntry
+) -> bool:
     """Unload a config entry."""
     _LOGGER.info("Unloading OpenIRBlaster integration for entry %s", entry.entry_id)
 
@@ -269,42 +317,18 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     if unload_ok:
         # Clean up learning session
-        data = hass.data[DOMAIN].pop(entry.entry_id)
-        learning_session: LearningSession = data["learning_session"]
-        await learning_session.async_cleanup()
-
-        # Unload services if this was the last entry
-        if not hass.data[DOMAIN]:
-            await async_unload_services(hass)
+        await entry.runtime_data.learning_session.async_cleanup()
 
     return unload_ok
 
 
-async def async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Reload config entry."""
-    await async_unload_entry(hass, entry)
-    await async_setup_entry(hass, entry)
-
-
 async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Handle removal of a config entry (cleanup storage and devices)."""
+    """Handle removal of a config entry (delete its storage file)."""
     _LOGGER.info("Removing OpenIRBlaster config entry %s", entry.entry_id)
 
-    # Delete storage file for this entry
+    # Delete storage file for this entry. Device and entity registry
+    # entries are removed automatically by core when the entry is removed.
     storage = OpenIRBlasterStorage(hass, entry.entry_id)
     await storage.async_delete()
 
-    # Explicitly remove device registry entries for this config entry
-    # (HA should do this automatically, but being explicit ensures cleanup)
-    device_registry = dr.async_get(hass)
-    devices_to_remove = [
-        device.id
-        for device in device_registry.devices.values()
-        if entry.entry_id in device.config_entries
-    ]
-    for device_id in devices_to_remove:
-        _LOGGER.debug("Removing device %s", device_id)
-        device_registry.async_remove_device(device_id)
-
-    _LOGGER.info("Cleanup complete for entry %s: storage deleted, %d devices removed",
-                 entry.entry_id, len(devices_to_remove))
+    _LOGGER.info("Cleanup complete for entry %s: storage deleted", entry.entry_id)

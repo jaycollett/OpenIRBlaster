@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 
 from homeassistant.components.button import ButtonEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ServiceNotFound
 from homeassistant.helpers import entity_registry as er
-from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import (
@@ -28,25 +28,30 @@ from .const import (
     UNIQUE_ID_LEARN_BUTTON,
     UNIQUE_ID_SEND_LAST_BUTTON,
 )
-from .helpers import get_esphome_service
+from .data import OpenIRBlasterConfigEntry
+from .helpers import (
+    async_clear_send_service_missing,
+    async_flag_send_service_missing,
+    get_esphome_service,
+)
 from .learning import LearnedCode, LearningSession
-from .storage import OpenIRBlasterStorage
 
 _LOGGER = logging.getLogger(__name__)
+
+# Push-based integration: no parallel polling coordination needed
+PARALLEL_UPDATES = 0
 
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: ConfigEntry,
+    entry: OpenIRBlasterConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up OpenIRBlaster button entities."""
     _LOGGER.debug("Setting up button entities for entry %s", entry.entry_id)
 
-    storage: OpenIRBlasterStorage = hass.data[DOMAIN][entry.entry_id]["storage"]
-    learning_session: LearningSession = hass.data[DOMAIN][entry.entry_id][
-        "learning_session"
-    ]
+    storage = entry.runtime_data.storage
+    learning_session = entry.runtime_data.learning_session
 
     entities: list[ButtonEntity] = []
 
@@ -133,7 +138,6 @@ class LearnButton(OpenIRBlasterButtonBase):
         super().__init__(entry, use_controls_device=True)  # Assign to controls device
         self._learning_session = learning_session
         self._attr_unique_id = UNIQUE_ID_LEARN_BUTTON.format(entry_id=entry.entry_id)
-        self._attr_icon = "mdi:remote-tv"
 
         # Store entry for later entity ID lookup
         self._text_entity_unique_id = UNIQUE_ID_CODE_NAME_INPUT.format(entry_id=entry.entry_id)
@@ -242,7 +246,7 @@ class LearnButton(OpenIRBlasterButtonBase):
             return
         self._save_in_progress = True
         _LOGGER.info("Scheduling save of learned code: %s", self._pending_save_name)
-        asyncio.create_task(self._async_save_learned_code())
+        self.hass.async_create_task(self._async_save_learned_code())
 
     async def _async_save_learned_code(self) -> None:
         """Save the learned code with the pending name."""
@@ -250,8 +254,8 @@ class LearnButton(OpenIRBlasterButtonBase):
             return
 
         try:
-            # Get storage from hass.data
-            storage: OpenIRBlasterStorage = self.hass.data[DOMAIN][self._entry.entry_id]["storage"]
+            data = self._entry.runtime_data
+            storage = data.storage
 
             # Check for duplicate name
             if storage.name_exists(self._pending_save_name):
@@ -280,18 +284,25 @@ class LearnButton(OpenIRBlasterButtonBase):
                 return
 
             # Save the code
+            saved_name = self._pending_save_name
             await storage.async_add_code(
-                name=self._pending_save_name,
+                name=saved_name,
                 carrier_hz=pending_code.carrier_hz,
                 pulses=pending_code.pulses,
             )
 
-            _LOGGER.info("Saved learned code as: %s", self._pending_save_name)
+            _LOGGER.info("Saved learned code as: %s", saved_name)
 
-            # Store all learned code data in hass.data so sensors can display it after reload
-            self.hass.data[DOMAIN][self._entry.entry_id]["last_learned_name"] = self._pending_save_name
-            self.hass.data[DOMAIN][self._entry.entry_id]["last_learned_timestamp"] = pending_code.timestamp
-            self.hass.data[DOMAIN][self._entry.entry_id]["last_learned_pulse_count"] = len(pending_code.pulses)
+            # Persist last-learned metadata so the sensors survive the
+            # entry reload below and HA restarts.
+            await storage.async_set_last_learned(
+                name=saved_name,
+                timestamp=pending_code.timestamp,
+                pulse_count=len(pending_code.pulses),
+            )
+            data.last_learned_name = saved_name
+            data.last_learned_timestamp = pending_code.timestamp
+            data.last_learned_pulse_count = len(pending_code.pulses)
 
             # Clear the text entity - find it using entity registry
             registry = er.async_get(self.hass)
@@ -342,7 +353,6 @@ class SendLastButton(OpenIRBlasterButtonBase):
         self._attr_unique_id = UNIQUE_ID_SEND_LAST_BUTTON.format(
             entry_id=entry.entry_id
         )
-        self._attr_icon = "mdi:send"
 
     async def async_press(self) -> None:
         """Handle the button press."""
@@ -358,6 +368,7 @@ class SendLastButton(OpenIRBlasterButtonBase):
                 "ESPHome service not found - cannot send IR code. "
                 "Try reloading the integration if the device was renamed."
             )
+            async_flag_send_service_missing(self.hass, self._entry.entry_id)
             return
 
         try:
@@ -371,6 +382,13 @@ class SendLastButton(OpenIRBlasterButtonBase):
                 blocking=True,
             )
             _LOGGER.info("Sent last learned code")
+            async_clear_send_service_missing(self.hass, self._entry.entry_id)
+        except ServiceNotFound:
+            _LOGGER.error(
+                "ESPHome service %s disappeared - cannot send last learned code",
+                service_name,
+            )
+            async_flag_send_service_missing(self.hass, self._entry.entry_id)
         except Exception as err:
             _LOGGER.error("Failed to send last learned code: %s", err)
 
@@ -407,6 +425,7 @@ class CodeButton(OpenIRBlasterButtonBase):
                 "Try reloading the integration if the device was renamed.",
                 self._code_id,
             )
+            async_flag_send_service_missing(self.hass, self._entry.entry_id)
             return
 
         try:
@@ -420,6 +439,14 @@ class CodeButton(OpenIRBlasterButtonBase):
                 blocking=True,
             )
             _LOGGER.info("Sent code %s", self._code_id)
+            async_clear_send_service_missing(self.hass, self._entry.entry_id)
+        except ServiceNotFound:
+            _LOGGER.error(
+                "ESPHome service %s disappeared - cannot send IR code %s",
+                service_name,
+                self._code_id,
+            )
+            async_flag_send_service_missing(self.hass, self._entry.entry_id)
         except Exception as err:
             _LOGGER.error("Failed to send code %s: %s", self._code_id, err)
 

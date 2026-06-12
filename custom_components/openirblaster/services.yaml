@@ -1,19 +1,15 @@
 # OpenIRBlaster Services
+# Names, descriptions, and field labels come from translations
+# (strings.json / translations/en.json).
 
 learn_start:
-  name: Start Learning
-  description: Start an IR code learning session
   fields:
     config_entry_id:
-      name: Config Entry ID
-      description: The configuration entry ID for the OpenIRBlaster device
       required: true
-      example: "abc123def456"
       selector:
-        text:
+        config_entry:
+          integration: openirblaster
     timeout:
-      name: Timeout
-      description: Learning session timeout in seconds
       required: false
       default: 30
       example: 30
@@ -24,26 +20,18 @@ learn_start:
           unit_of_measurement: seconds
 
 send_code:
-  name: Send IR Code
-  description: Send a stored IR code
   fields:
     config_entry_id:
-      name: Config Entry ID
-      description: The configuration entry ID for the OpenIRBlaster device
       required: true
-      example: "abc123def456"
       selector:
-        text:
+        config_entry:
+          integration: openirblaster
     id:
-      name: Code ID
-      description: The ID of the code to send
       required: true
       example: "tv_power"
       selector:
         text:
     carrier_hz:
-      name: Carrier Frequency
-      description: Optional override for carrier frequency in Hz
       required: false
       example: 38000
       selector:
@@ -52,86 +40,60 @@ send_code:
           max: 56000
           unit_of_measurement: Hz
     pulses:
-      name: Pulses
-      description: Optional override for pulse array
       required: false
       example: [9000, 4500, 560]
       selector:
         object:
 
 delete_code:
-  name: Delete Code
-  description: Delete a stored IR code and its button entity
   fields:
     id:
-      name: Code ID
-      description: The ID of the code to delete (e.g., tv_power)
       required: true
       example: "tv_power"
       selector:
         text:
     config_entry_id:
-      name: Config Entry ID
-      description: Optional - will auto-detect if not provided
       required: false
-      example: "abc123def456"
       selector:
-        text:
+        config_entry:
+          integration: openirblaster
 
 rename_code:
-  name: Rename Code
-  description: Rename a stored IR code
   fields:
     config_entry_id:
-      name: Config Entry ID
-      description: The configuration entry ID for the OpenIRBlaster device
       required: true
-      example: "abc123def456"
       selector:
-        text:
+        config_entry:
+          integration: openirblaster
     id:
-      name: Code ID
-      description: The ID of the code to rename
       required: true
       example: "tv_power"
       selector:
         text:
     new_name:
-      name: New Name
-      description: The new name for the code
       required: true
       example: "TV Power Button"
       selector:
         text:
 
 save_pending:
-  name: Save Pending Code
-  description: Save the pending learned IR code with a name
   fields:
     config_entry_id:
-      name: Config Entry ID
-      description: The configuration entry ID for the OpenIRBlaster device
       required: true
-      example: "abc123def456"
       selector:
-        text:
+        config_entry:
+          integration: openirblaster
     name:
-      name: Code Name
-      description: Name for the learned IR code
       required: true
       example: "TV Power"
       selector:
         text:
     tags:
-      name: Tags
-      description: Comma-separated tags for organizing codes
       required: false
       example: "tv, living-room, power"
       selector:
         text:
     notes:
-      name: Notes
-      description: Optional notes about the code
       required: false
       example: "Samsung TV power button"
       selector:

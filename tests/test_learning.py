@@ -100,6 +100,81 @@ async def test_cannot_start_learning_when_not_idle(
     await learning_session.async_cleanup()
 
 
+async def test_concurrent_start_learning_only_one_wins(
+    hass: HomeAssistant, learning_session: LearningSession
+) -> None:
+    """Two concurrent starts must yield exactly one armed session.
+
+    The IDLE check used to be followed by an await before the state was
+    claimed, so two concurrent starts could both pass it; the second would
+    overwrite the first's bus-listener unsubscribe callable (permanent
+    leak) and leave a stray timeout. The state is now claimed synchronously
+    before the first await, so the loser is rejected exactly like the
+    existing non-IDLE path.
+    """
+    turn_on_started = asyncio.Event()
+    release_turn_on = asyncio.Event()
+
+    async def slow_turn_on(call) -> None:
+        turn_on_started.set()
+        await release_turn_on.wait()
+
+    hass.services.async_register("switch", "turn_on", slow_turn_on)
+    hass.services.async_register("switch", "turn_off", AsyncMock())
+
+    baseline_listeners = hass.bus.async_listeners().get(EVENT_LEARNED, 0)
+
+    task1 = hass.async_create_task(learning_session.async_start_learning())
+    task2 = hass.async_create_task(learning_session.async_start_learning())
+
+    # The first start is suspended inside the switch call; the second must
+    # already have been rejected by the synchronous claim.
+    await asyncio.wait_for(turn_on_started.wait(), timeout=1)
+    release_turn_on.set()
+
+    results = await asyncio.gather(task1, task2)
+    assert sorted(results) == [False, True]
+    assert learning_session.state == STATE_ARMED
+
+    # Exactly one bus listener and one timeout were registered.
+    assert (
+        hass.bus.async_listeners().get(EVENT_LEARNED, 0) - baseline_listeners == 1
+    )
+    assert learning_session._event_listener is not None
+    assert learning_session._timeout_unsub is not None
+
+    await learning_session.async_cleanup()
+    # Cleanup releases the single subscription completely.
+    assert hass.bus.async_listeners().get(EVENT_LEARNED, 0) == baseline_listeners
+
+
+async def test_start_learning_reverts_to_idle_on_switch_failure(
+    hass: HomeAssistant, learning_session: LearningSession
+) -> None:
+    """A failed switch turn-on releases the claim and returns to IDLE."""
+
+    async def failing_turn_on(call) -> None:
+        raise RuntimeError("device offline")
+
+    hass.services.async_register("switch", "turn_on", failing_turn_on)
+
+    baseline_listeners = hass.bus.async_listeners().get(EVENT_LEARNED, 0)
+
+    success = await learning_session.async_start_learning()
+    assert success is False
+    assert learning_session.state == STATE_IDLE
+    assert learning_session._event_listener is None
+    assert learning_session._timeout_unsub is None
+    assert hass.bus.async_listeners().get(EVENT_LEARNED, 0) == baseline_listeners
+
+    # The session is immediately startable again once the device recovers.
+    hass.services.async_remove("switch", "turn_on")
+    hass.services.async_register("switch", "turn_on", AsyncMock())
+    assert await learning_session.async_start_learning() is True
+    assert learning_session.state == STATE_ARMED
+    await learning_session.async_cleanup()
+
+
 async def test_handle_learned_event(
     hass: HomeAssistant, learning_session: LearningSession
 ) -> None:
@@ -224,9 +299,8 @@ async def test_clear_pending(
     assert learning_session.state == STATE_RECEIVED
     assert learning_session.pending_code is not None
 
-    # Clear pending (async operation, need to wait)
-    learning_session.clear_pending()
-    await asyncio.sleep(0.1)  # Wait for async task to complete
+    # Clear pending
+    await learning_session.async_clear_pending()
     assert learning_session.state == STATE_IDLE
     assert learning_session.pending_code is None
 
@@ -290,12 +364,12 @@ async def test_cleanup(
 
     await learning_session.async_start_learning()
     assert learning_session._event_listener is not None
-    assert learning_session._timeout_handle is not None
+    assert learning_session._timeout_unsub is not None
 
     await learning_session.async_cleanup()
 
     # Cleanup should cancel timeout and remove listener
-    assert learning_session._timeout_handle is None
+    assert learning_session._timeout_unsub is None
     assert learning_session._event_listener is None
 
 
@@ -485,6 +559,183 @@ async def test_malformed_event_mac_rejected_when_device_id_also_mismatches(
     await learning_session_with_mac.async_cleanup()
 
 
+async def test_malformed_mac_creates_repair_issue(
+    hass: HomeAssistant, learning_session_with_mac: LearningSession
+) -> None:
+    """A malformed event MAC raises a dangling_mac repair issue."""
+    from homeassistant.helpers import issue_registry as ir
+
+    from custom_components.openirblaster.const import DOMAIN
+
+    hass.services.async_register("switch", "turn_on", AsyncMock())
+    hass.services.async_register("switch", "turn_off", AsyncMock())
+
+    await learning_session_with_mac.async_start_learning()
+
+    event = Event(
+        EVENT_LEARNED,
+        {
+            ATTR_DEVICE_ID: "openirblaster-test123",
+            ATTR_MAC_ADDRESS: "e\x0f",  # dangling-pointer garbage
+            ATTR_CARRIER_HZ: 38000,
+            ATTR_PULSES_JSON: "[9000,-4500,560,-560]",
+            ATTR_TIMESTAMP: "2026-01-12T14:30:00-05:00",
+        },
+    )
+    learning_session_with_mac._async_handle_learned_event(event)
+    await asyncio.sleep(0.1)
+
+    issue_registry = ir.async_get(hass)
+    issue = issue_registry.async_get_issue(DOMAIN, "dangling_mac_test_entry")
+    assert issue is not None
+    assert issue.severity == ir.IssueSeverity.WARNING
+    assert issue.translation_key == "dangling_mac"
+    assert issue.is_fixable is False
+
+
+async def test_valid_mac_clears_repair_issue(
+    hass: HomeAssistant, learning_session_with_mac: LearningSession
+) -> None:
+    """A valid event MAC deletes a stale dangling_mac repair issue."""
+    from homeassistant.helpers import issue_registry as ir
+
+    from custom_components.openirblaster.const import DOMAIN
+
+    # Pre-existing issue from a capture before the firmware was updated
+    ir.async_create_issue(
+        hass,
+        DOMAIN,
+        "dangling_mac_test_entry",
+        is_fixable=False,
+        severity=ir.IssueSeverity.WARNING,
+        translation_key="dangling_mac",
+        translation_placeholders={"device_id": "openirblaster-test123"},
+    )
+
+    hass.services.async_register("switch", "turn_on", AsyncMock())
+    hass.services.async_register("switch", "turn_off", AsyncMock())
+
+    await learning_session_with_mac.async_start_learning()
+
+    event = Event(
+        EVENT_LEARNED,
+        {
+            ATTR_DEVICE_ID: "openirblaster-test123",
+            ATTR_MAC_ADDRESS: "AA:BB:CC:DD:EE:FF",  # valid again
+            ATTR_CARRIER_HZ: 38000,
+            ATTR_PULSES_JSON: "[9000,-4500,560,-560]",
+            ATTR_TIMESTAMP: "2026-01-12T14:30:00-05:00",
+        },
+    )
+    learning_session_with_mac._async_handle_learned_event(event)
+    await asyncio.sleep(0.1)
+
+    issue_registry = ir.async_get(hass)
+    assert (
+        issue_registry.async_get_issue(DOMAIN, "dangling_mac_test_entry") is None
+    )
+    assert learning_session_with_mac.state == STATE_RECEIVED
+
+
+async def test_capture_at_deadline_does_not_emit_timeout(
+    hass: HomeAssistant, learning_session: LearningSession
+) -> None:
+    """A capture landing right at the timeout deadline must win the race.
+
+    The timeout handle must be cancelled synchronously inside the (sync)
+    event handler, before the async finalize task runs, and a timeout
+    callback that fires anyway must be a no-op: the session ends in
+    RECEIVED and never transitions through TIMEOUT.
+    """
+    states: list[str] = []
+    learning_session.register_callback(lambda state, code: states.append(state))
+
+    hass.services.async_register("switch", "turn_on", AsyncMock())
+    hass.services.async_register("switch", "turn_off", AsyncMock())
+
+    await learning_session.async_start_learning()
+    assert learning_session._timeout_unsub is not None
+
+    event = Event(
+        EVENT_LEARNED,
+        {
+            ATTR_DEVICE_ID: "openirblaster-test123",
+            ATTR_CARRIER_HZ: 38000,
+            ATTR_PULSES_JSON: "[9000,-4500,560,-560]",
+            ATTR_TIMESTAMP: "2026-01-12T14:30:00-05:00",
+        },
+    )
+    learning_session._async_handle_learned_event(event)
+
+    # Cancelled synchronously in the (sync) event handler: the unsub
+    # callable was invoked and cleared before any await could let the
+    # deadline fire.
+    assert learning_session._timeout_unsub is None
+
+    # Simulate the deadline firing anyway (the loop callback had already
+    # been dispatched when the capture arrived). Must be a no-op.
+    await learning_session._async_handle_timeout()
+
+    # Drain the finalize task.
+    await asyncio.sleep(0.1)
+
+    assert learning_session.state == STATE_RECEIVED
+    assert learning_session.pending_code is not None
+    assert STATE_TIMEOUT not in states
+
+
+async def test_timeout_during_suspended_finalize_is_noop(
+    hass: HomeAssistant, learning_session: LearningSession
+) -> None:
+    """Timeout firing while finalize awaits the switch turn-off is a no-op.
+
+    While _async_finalize_learning is suspended on the blocking switch
+    turn-off call, the state is still ARMED; only _capture_finalized tells
+    the timeout handler the capture already won.
+    """
+    states: list[str] = []
+    learning_session.register_callback(lambda state, code: states.append(state))
+
+    turn_off_started = asyncio.Event()
+    release_turn_off = asyncio.Event()
+
+    async def slow_turn_off(call) -> None:
+        turn_off_started.set()
+        await release_turn_off.wait()
+
+    hass.services.async_register("switch", "turn_on", AsyncMock())
+    hass.services.async_register("switch", "turn_off", slow_turn_off)
+
+    await learning_session.async_start_learning()
+
+    event = Event(
+        EVENT_LEARNED,
+        {
+            ATTR_DEVICE_ID: "openirblaster-test123",
+            ATTR_CARRIER_HZ: 38000,
+            ATTR_PULSES_JSON: "[9000,-4500,560,-560]",
+            ATTR_TIMESTAMP: "2026-01-12T14:30:00-05:00",
+        },
+    )
+    learning_session._async_handle_learned_event(event)
+
+    # Let finalize start and suspend inside the switch turn-off call.
+    await asyncio.wait_for(turn_off_started.wait(), timeout=1)
+    assert learning_session.state == STATE_ARMED  # finalize not done yet
+
+    # The deadline fires while finalize is suspended: must bail immediately.
+    await learning_session._async_handle_timeout()
+    assert STATE_TIMEOUT not in states
+
+    # Unblock finalize and confirm the capture completes normally.
+    release_turn_off.set()
+    await asyncio.sleep(0.1)
+
+    assert learning_session.state == STATE_RECEIVED
+    assert learning_session.pending_code is not None
+    assert STATE_TIMEOUT not in states
+
+
 # ---------------------------------------------------------------------------
 # Capture-marker replay path: the firmware publishes a short timestamp marker
 # to a text_sensor after every learned capture. The marker state replays on
@@ -509,15 +760,24 @@ def _install_replay_service_mock(
     send_service: str = _SEND_SERVICE_NAME,
     replay_service: str = _REPLAY_SERVICE_NAME,
 ) -> AsyncMock:
-    """Populate hass.data so get_esphome_service resolves, and register a
-    replay-service AsyncMock callers can assert against.
+    """Create a config entry with runtime_data so get_esphome_service
+    resolves, and register a replay-service AsyncMock callers can assert
+    against.
     """
-    from custom_components.openirblaster.const import DOMAIN
+    from unittest.mock import MagicMock
 
-    hass.data.setdefault(DOMAIN, {})
-    hass.data[DOMAIN][config_entry_id] = {
-        "esphome_service_name": send_service,
-    }
+    from pytest_homeassistant_custom_component.common import MockConfigEntry
+
+    from custom_components.openirblaster.const import DOMAIN
+    from custom_components.openirblaster.data import OpenIRBlasterData
+
+    entry = MockConfigEntry(domain=DOMAIN, entry_id=config_entry_id)
+    entry.add_to_hass(hass)
+    entry.runtime_data = OpenIRBlasterData(
+        storage=MagicMock(),
+        learning_session=MagicMock(),
+        esphome_service_name=send_service,
+    )
     replay_mock = AsyncMock()
     hass.services.async_register("esphome", replay_service, replay_mock)
     return replay_mock
@@ -661,14 +921,24 @@ async def test_replay_skipped_when_send_service_unavailable(
     """If the send service is missing, we log and skip replay (no crash)."""
     import logging
 
+    from unittest.mock import MagicMock
+
+    from pytest_homeassistant_custom_component.common import MockConfigEntry
+
     import custom_components.openirblaster.learning as learning_module
     from custom_components.openirblaster.const import DOMAIN
+    from custom_components.openirblaster.data import OpenIRBlasterData
 
     monkeypatch.setattr(learning_module, "_REPLAY_GRACE_SECONDS", 0.1)
 
-    # Populate hass.data but leave esphome_service_name unset.
-    hass.data.setdefault(DOMAIN, {})
-    hass.data[DOMAIN]["test_entry"] = {}
+    # Create the entry but leave esphome_service_name unset.
+    entry = MockConfigEntry(domain=DOMAIN, entry_id="test_entry")
+    entry.add_to_hass(hass)
+    entry.runtime_data = OpenIRBlasterData(
+        storage=MagicMock(),
+        learning_session=MagicMock(),
+        esphome_service_name=None,
+    )
 
     hass.services.async_register("switch", "turn_on", AsyncMock())
     hass.services.async_register("switch", "turn_off", AsyncMock())
@@ -727,7 +997,7 @@ async def test_async_clear_pending_tears_down_listeners_and_timeout(
 
     hass.states.async_set(_CAPTURE_MARKER_ENTITY_ID, "")
     await learning_session.async_start_learning()
-    assert learning_session._timeout_handle is not None
+    assert learning_session._timeout_unsub is not None
     assert learning_session._event_listener is not None
     assert learning_session._state_listener is not None
 
@@ -735,7 +1005,7 @@ async def test_async_clear_pending_tears_down_listeners_and_timeout(
     await learning_session.async_clear_pending()
 
     # All subscriptions released, safe to start again
-    assert learning_session._timeout_handle is None
+    assert learning_session._timeout_unsub is None
     assert learning_session._event_listener is None
     assert learning_session._state_listener is None
     assert learning_session.state == STATE_IDLE

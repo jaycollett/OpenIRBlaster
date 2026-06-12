@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
+from typing import Any
 
 from homeassistant.components.sensor import RestoreSensor, SensorDeviceClass
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import (
@@ -20,20 +20,22 @@ from .const import (
     UNIQUE_ID_LAST_LEARNED_LEN,
     UNIQUE_ID_LAST_LEARNED_NAME,
 )
+from .data import OpenIRBlasterConfigEntry
 from .learning import LearnedCode, LearningSession
 
 _LOGGER = logging.getLogger(__name__)
 
+# Push-based integration: no parallel polling coordination needed
+PARALLEL_UPDATES = 0
+
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: ConfigEntry,
+    entry: OpenIRBlasterConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up OpenIRBlaster sensor entities."""
-    learning_session: LearningSession = hass.data[DOMAIN][entry.entry_id][
-        "learning_session"
-    ]
+    learning_session = entry.runtime_data.learning_session
 
     entities: list[RestoreSensor] = [
         LastLearnedNameSensor(entry, learning_session),
@@ -51,7 +53,7 @@ class OpenIRBlasterSensorBase(RestoreSensor):
 
     def __init__(
         self,
-        entry: ConfigEntry,
+        entry: OpenIRBlasterConfigEntry,
         learning_session: LearningSession,
     ) -> None:
         """Initialize the sensor."""
@@ -75,29 +77,36 @@ class OpenIRBlasterSensorBase(RestoreSensor):
             identifiers={(DOMAIN, device_identifier)},
         )
 
-        # Register callback for learning session state changes
-        learning_session.register_callback(self._handle_state_change)
-
     async def async_added_to_hass(self) -> None:
-        """Restore last state on startup."""
+        """Restore last state and subscribe to learning-session changes."""
         await super().async_added_to_hass()
         last = await self.async_get_last_sensor_data()
         if last is not None:
             self._restored_native_value = last.native_value
+        # Registered here (not in __init__) so the callback only fires while
+        # the entity is added to hass; unregistered in
+        # async_will_remove_from_hass since register_callback returns no
+        # unsubscribe callable.
+        self._learning_session.register_callback(self._handle_state_change)
 
     async def async_will_remove_from_hass(self) -> None:
         """Clean up when entity is removed."""
-        # Unregister callback to prevent callback leak
         self._learning_session.unregister_callback(self._handle_state_change)
+        await super().async_will_remove_from_hass()
 
     def _handle_state_change(self, state: str, code: LearnedCode | None) -> None:
         """Handle learning session state change."""
         if state == STATE_RECEIVED and code is not None:
             # Store the last learned code so it persists after pending is cleared
             self._last_learned_code = code
-            # Schedule update safely - check if entity is still added to hass
-            if self.hass is not None and self.entity_id is not None:
-                self.async_schedule_update_ha_state(True)
+            self.async_schedule_update_ha_state(True)
+
+    def _storage_last_learned(self) -> dict[str, Any] | None:
+        """Get storage-backed last-learned metadata, if available."""
+        data = getattr(self._entry, "runtime_data", None)
+        if data is None:
+            return None
+        return data.storage.get_last_learned()
 
 
 class LastLearnedNameSensor(OpenIRBlasterSensorBase):
@@ -107,7 +116,7 @@ class LastLearnedNameSensor(OpenIRBlasterSensorBase):
 
     def __init__(
         self,
-        entry: ConfigEntry,
+        entry: OpenIRBlasterConfigEntry,
         learning_session: LearningSession,
     ) -> None:
         """Initialize the sensor."""
@@ -115,16 +124,14 @@ class LastLearnedNameSensor(OpenIRBlasterSensorBase):
         self._attr_unique_id = UNIQUE_ID_LAST_LEARNED_NAME.format(
             entry_id=entry.entry_id
         )
-        self._attr_icon = "mdi:tag"
 
     @property
     def native_value(self) -> str | None:
         """Return the state of the sensor."""
-        # Read the last learned name from hass.data
-        if self.hass and self._entry.entry_id in self.hass.data.get(DOMAIN, {}):
-            last_name = self.hass.data[DOMAIN][self._entry.entry_id].get("last_learned_name")
-            if last_name:
-                return last_name
+        # Storage-backed value survives reloads and restarts
+        last = self._storage_last_learned()
+        if last and last.get("name"):
+            return last["name"]
         # Fallback to device_id if no name set yet
         if self._last_learned_code:
             return self._last_learned_code.device_id
@@ -137,10 +144,11 @@ class LastLearnedTimestampSensor(OpenIRBlasterSensorBase):
     """Sensor showing when the last code was learned."""
 
     _attr_translation_key = "last_learned_timestamp"
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
 
     def __init__(
         self,
-        entry: ConfigEntry,
+        entry: OpenIRBlasterConfigEntry,
         learning_session: LearningSession,
     ) -> None:
         """Initialize the sensor."""
@@ -148,21 +156,19 @@ class LastLearnedTimestampSensor(OpenIRBlasterSensorBase):
         self._attr_unique_id = UNIQUE_ID_LAST_LEARNED_AT.format(
             entry_id=entry.entry_id
         )
-        self._attr_icon = "mdi:clock"
-        self._attr_device_class = SensorDeviceClass.TIMESTAMP
 
     @property
     def native_value(self) -> datetime | None:
         """Return the state of the sensor."""
-        # Read the last learned timestamp from hass.data (persists across reloads)
-        if self.hass and self._entry.entry_id in self.hass.data.get(DOMAIN, {}):
-            timestamp = self.hass.data[DOMAIN][self._entry.entry_id].get("last_learned_timestamp")
-            if timestamp:
-                try:
-                    # Parse ISO timestamp
-                    return datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
-                except ValueError:
-                    _LOGGER.warning("Could not parse timestamp: %s", timestamp)
+        # Storage-backed value survives reloads and restarts
+        last = self._storage_last_learned()
+        if last and last.get("timestamp"):
+            try:
+                return datetime.fromisoformat(
+                    last["timestamp"].replace("Z", "+00:00")
+                )
+            except ValueError:
+                _LOGGER.warning("Could not parse timestamp: %s", last["timestamp"])
         # Fallback to in-memory code
         if self._last_learned_code and self._last_learned_code.timestamp:
             try:
@@ -183,10 +189,11 @@ class LastLearnedLengthSensor(OpenIRBlasterSensorBase):
     """Sensor showing the pulse count of the last learned code."""
 
     _attr_translation_key = "last_learned_pulse_count"
+    _attr_native_unit_of_measurement = "pulses"
 
     def __init__(
         self,
-        entry: ConfigEntry,
+        entry: OpenIRBlasterConfigEntry,
         learning_session: LearningSession,
     ) -> None:
         """Initialize the sensor."""
@@ -194,17 +201,14 @@ class LastLearnedLengthSensor(OpenIRBlasterSensorBase):
         self._attr_unique_id = UNIQUE_ID_LAST_LEARNED_LEN.format(
             entry_id=entry.entry_id
         )
-        self._attr_icon = "mdi:counter"
-        self._attr_native_unit_of_measurement = "pulses"
 
     @property
     def native_value(self) -> int | None:
         """Return the state of the sensor."""
-        # Read the last learned pulse count from hass.data (persists across reloads)
-        if self.hass and self._entry.entry_id in self.hass.data.get(DOMAIN, {}):
-            pulse_count = self.hass.data[DOMAIN][self._entry.entry_id].get("last_learned_pulse_count")
-            if pulse_count is not None:
-                return pulse_count
+        # Storage-backed value survives reloads and restarts
+        last = self._storage_last_learned()
+        if last and last.get("pulse_count") is not None:
+            return last["pulse_count"]
         # Fallback to in-memory code
         if self._last_learned_code:
             return len(self._last_learned_code.pulses)

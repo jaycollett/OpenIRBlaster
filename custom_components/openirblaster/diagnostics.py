@@ -18,9 +18,9 @@ from .const import (
     CONF_ESPHOME_DEVICE_NAME,
     CONF_ESPHOME_SERVICE_NAME,
     CONF_LEARNING_SWITCH_ENTITY_ID,
-    DOMAIN,
+    CONF_MAC_ADDRESS,
 )
-from .storage import OpenIRBlasterStorage
+from .data import OpenIRBlasterData
 
 TO_REDACT = {
     "device_id",
@@ -29,6 +29,7 @@ TO_REDACT = {
     CONF_LEARNING_SWITCH_ENTITY_ID,
     CONF_ESPHOME_DEVICE_NAME,
     CONF_ESPHOME_SERVICE_NAME,
+    CONF_MAC_ADDRESS,
     ATTR_PULSES,
 }
 
@@ -38,8 +39,8 @@ async def async_get_config_entry_diagnostics(
     config_entry: ConfigEntry,
 ) -> dict[str, Any]:
     """Return diagnostics for a config entry."""
-    data = hass.data.get(DOMAIN, {}).get(config_entry.entry_id, {})
-    storage: OpenIRBlasterStorage | None = data.get("storage")
+    data: OpenIRBlasterData | None = getattr(config_entry, "runtime_data", None)
+    storage = data.storage if data is not None else None
 
     storage_device = None
     codes_summary: list[dict[str, Any]] = []
@@ -69,10 +70,14 @@ async def async_get_config_entry_diagnostics(
             "options": dict(config_entry.options),
         },
         "runtime": {
-            "esphome_service_name": data.get("esphome_service_name"),
-            "learning_state": getattr(data.get("learning_session"), "state", None),
+            "esphome_service_name": (
+                data.esphome_service_name if data is not None else None
+            ),
+            "learning_state": (
+                data.learning_session.state if data is not None else None
+            ),
             "has_pending_code": bool(
-                getattr(data.get("learning_session"), "pending_code", None)
+                data.learning_session.pending_code if data is not None else None
             ),
         },
         "storage": {

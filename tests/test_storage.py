@@ -11,9 +11,54 @@ from custom_components.openirblaster.const import (
     ATTR_CODE_ID,
     ATTR_CODE_NAME,
     ATTR_PULSES,
+    STORAGE_MINOR_VERSION,
     STORAGE_VERSION,
 )
-from custom_components.openirblaster.storage import OpenIRBlasterStorage
+from custom_components.openirblaster.storage import (
+    OpenIRBlasterStorage,
+    OpenIRBlasterStore,
+)
+
+
+async def test_store_migration_identity(hass: HomeAssistant) -> None:
+    """Data written with the current version (1, 1) loads unchanged."""
+    store = OpenIRBlasterStore(
+        hass,
+        STORAGE_VERSION,
+        "openirblaster_migration_test",
+        minor_version=STORAGE_MINOR_VERSION,
+    )
+
+    old_data = {
+        "version": STORAGE_VERSION,
+        "device": {"device_id": "openirblaster-test123"},
+        "codes": [],
+    }
+
+    migrated = await store._async_migrate_func(1, 1, old_data)
+    assert migrated == old_data
+
+
+async def test_store_migration_unknown_version_raises(
+    hass: HomeAssistant,
+) -> None:
+    """Schemas newer than this code knows about are rejected, not loaded."""
+    store = OpenIRBlasterStore(
+        hass,
+        STORAGE_VERSION,
+        "openirblaster_migration_test",
+        minor_version=STORAGE_MINOR_VERSION,
+    )
+
+    # Future major version
+    with pytest.raises(ValueError):
+        await store._async_migrate_func(STORAGE_VERSION + 1, 1, {})
+
+    # Future minor version within the current major
+    with pytest.raises(ValueError):
+        await store._async_migrate_func(
+            STORAGE_VERSION, STORAGE_MINOR_VERSION + 1, {}
+        )
 
 
 async def test_storage_initialization(hass: HomeAssistant) -> None:

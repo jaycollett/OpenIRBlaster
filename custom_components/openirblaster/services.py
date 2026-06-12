@@ -6,8 +6,13 @@ import logging
 
 import voluptuous as vol
 
+from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant, ServiceCall
-from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
+from homeassistant.exceptions import (
+    HomeAssistantError,
+    ServiceNotFound,
+    ServiceValidationError,
+)
 from homeassistant.helpers import config_validation as cv
 
 from .const import (
@@ -21,9 +26,13 @@ from .const import (
     SERVICE_SAVE_PENDING,
     SERVICE_SEND_CODE,
 )
-from .helpers import get_esphome_service
-from .learning import LearningSession
-from .storage import OpenIRBlasterStorage
+from .data import OpenIRBlasterData
+from .helpers import (
+    async_clear_send_service_missing,
+    async_flag_send_service_missing,
+    async_remove_code_entities,
+    get_esphome_service,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -69,6 +78,30 @@ SAVE_PENDING_SCHEMA = vol.Schema(
 )
 
 
+def _async_get_entry_data(hass: HomeAssistant, entry_id: str) -> OpenIRBlasterData:
+    """Resolve a config_entry_id to its loaded runtime data.
+
+    Raises ServiceValidationError when the entry does not exist (or belongs
+    to another integration) or is not currently loaded.
+    """
+    entry = hass.config_entries.async_get_entry(entry_id)
+    if entry is None or entry.domain != DOMAIN:
+        raise ServiceValidationError(
+            f"Config entry {entry_id} not found",
+            translation_domain=DOMAIN,
+            translation_key="config_entry_not_found",
+            translation_placeholders={"config_entry_id": entry_id},
+        )
+    if entry.state is not ConfigEntryState.LOADED:
+        raise ServiceValidationError(
+            f"Config entry {entry_id} is not loaded",
+            translation_domain=DOMAIN,
+            translation_key="config_entry_not_loaded",
+            translation_placeholders={"config_entry_id": entry_id},
+        )
+    return entry.runtime_data
+
+
 async def async_setup_services(hass: HomeAssistant) -> None:
     """Set up services for OpenIRBlaster."""
     _LOGGER.info("Setting up OpenIRBlaster services")
@@ -78,18 +111,11 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         entry_id = call.data["config_entry_id"]
         timeout = call.data.get("timeout", 30)
 
-        if entry_id not in hass.data[DOMAIN]:
-            raise ServiceValidationError(
-                f"Config entry {entry_id} not found",
-                translation_domain=DOMAIN,
-                translation_key="config_entry_not_found",
-            )
+        data = _async_get_entry_data(hass, entry_id)
 
-        learning_session: LearningSession = hass.data[DOMAIN][entry_id][
-            "learning_session"
-        ]
-        learning_session.timeout = timeout
-        success = await learning_session.async_start_learning()
+        # Per-session override only; must not mutate the session default,
+        # which would silently stick for all subsequent sessions.
+        success = await data.learning_session.async_start_learning(timeout=timeout)
 
         if success:
             _LOGGER.info("Learning session started for entry %s", entry_id)
@@ -103,14 +129,8 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         entry_id = call.data["config_entry_id"]
         code_id = call.data[ATTR_CODE_ID]
 
-        if entry_id not in hass.data[DOMAIN]:
-            raise ServiceValidationError(
-                f"Config entry {entry_id} not found",
-                translation_domain=DOMAIN,
-                translation_key="config_entry_not_found",
-            )
-
-        storage: OpenIRBlasterStorage = hass.data[DOMAIN][entry_id]["storage"]
+        data = _async_get_entry_data(hass, entry_id)
+        storage = data.storage
 
         # Get code from storage or use overrides
         code = storage.get_code(code_id)
@@ -121,6 +141,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                 f"Code {code_id} not found and no override provided",
                 translation_domain=DOMAIN,
                 translation_key="code_not_found",
+                translation_placeholders={"code_id": code_id},
             )
 
         carrier_hz = call.data.get(ATTR_CARRIER_HZ, code.get(ATTR_CARRIER_HZ) if code else None)
@@ -129,6 +150,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         # Call ESPHome service (discovered at integration load time)
         service_name = get_esphome_service(hass, entry_id)
         if not service_name:
+            async_flag_send_service_missing(hass, entry_id)
             raise HomeAssistantError(
                 f"ESPHome service not found - cannot send IR code {code_id}. "
                 "Try reloading the integration if the device was renamed."
@@ -145,6 +167,13 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                 blocking=True,
             )
             _LOGGER.info("Sent code %s", code_id)
+            async_clear_send_service_missing(hass, entry_id)
+        except ServiceNotFound as err:
+            # The service disappeared after setup (device renamed/offline).
+            async_flag_send_service_missing(hass, entry_id)
+            raise HomeAssistantError(
+                f"Failed to send code {code_id}: {err}"
+            ) from err
         except Exception as err:
             raise HomeAssistantError(f"Failed to send code {code_id}: {err}") from err
 
@@ -156,10 +185,11 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         # If no config_entry_id provided, find it by searching for the code
         if not entry_id:
             _LOGGER.debug("No config_entry_id provided, searching for code %s", code_id)
-            for check_entry_id in hass.data.get(DOMAIN, {}):
-                storage: OpenIRBlasterStorage = hass.data[DOMAIN][check_entry_id]["storage"]
-                if storage.get_code(code_id):
-                    entry_id = check_entry_id
+            for candidate in hass.config_entries.async_entries(DOMAIN):
+                if candidate.state is not ConfigEntryState.LOADED:
+                    continue
+                if candidate.runtime_data.storage.get_code(code_id):
+                    entry_id = candidate.entry_id
                     _LOGGER.debug("Found code %s in entry %s", code_id, entry_id)
                     break
 
@@ -168,27 +198,25 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                 f"Could not find code {code_id} in any OpenIRBlaster device",
                 translation_domain=DOMAIN,
                 translation_key="code_not_found",
+                translation_placeholders={"code_id": code_id},
             )
 
-        if entry_id not in hass.data[DOMAIN]:
-            raise ServiceValidationError(
-                f"Config entry {entry_id} not found",
-                translation_domain=DOMAIN,
-                translation_key="config_entry_not_found",
-            )
-
-        storage: OpenIRBlasterStorage = hass.data[DOMAIN][entry_id]["storage"]
-        success = await storage.async_delete_code(code_id)
+        data = _async_get_entry_data(hass, entry_id)
+        success = await data.storage.async_delete_code(code_id)
 
         if success:
             _LOGGER.info("Deleted code %s", code_id)
-            # Reload entry to remove button entity
+            # Remove the code's button entities from the entity registry,
+            # then reload the entry. Without the registry cleanup the
+            # buttons linger as "no longer provided" orphans.
+            async_remove_code_entities(hass, entry_id, code_id)
             await hass.config_entries.async_reload(entry_id)
         else:
             raise ServiceValidationError(
                 f"Code {code_id} not found in storage",
                 translation_domain=DOMAIN,
                 translation_key="code_not_found",
+                translation_placeholders={"code_id": code_id},
             )
 
     async def handle_rename_code(call: ServiceCall) -> None:
@@ -197,15 +225,8 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         code_id = call.data[ATTR_CODE_ID]
         new_name = call.data["new_name"]
 
-        if entry_id not in hass.data[DOMAIN]:
-            raise ServiceValidationError(
-                f"Config entry {entry_id} not found",
-                translation_domain=DOMAIN,
-                translation_key="config_entry_not_found",
-            )
-
-        storage: OpenIRBlasterStorage = hass.data[DOMAIN][entry_id]["storage"]
-        code = await storage.async_update_code(code_id, name=new_name)
+        data = _async_get_entry_data(hass, entry_id)
+        code = await data.storage.async_update_code(code_id, name=new_name)
 
         if code:
             _LOGGER.info("Renamed code %s to %s", code_id, new_name)
@@ -216,6 +237,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                 f"Code {code_id} not found",
                 translation_domain=DOMAIN,
                 translation_key="code_not_found",
+                translation_placeholders={"code_id": code_id},
             )
 
     async def handle_save_pending(call: ServiceCall) -> None:
@@ -225,15 +247,9 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         tags_str = call.data.get("tags", "")
         notes = call.data.get("notes", "")
 
-        if entry_id not in hass.data[DOMAIN]:
-            raise ServiceValidationError(
-                f"Config entry {entry_id} not found",
-                translation_domain=DOMAIN,
-                translation_key="config_entry_not_found",
-            )
-
-        learning_session: LearningSession = hass.data[DOMAIN][entry_id]["learning_session"]
-        storage: OpenIRBlasterStorage = hass.data[DOMAIN][entry_id]["storage"]
+        data = _async_get_entry_data(hass, entry_id)
+        learning_session = data.learning_session
+        storage = data.storage
 
         # Check if there's a pending code
         if not learning_session.pending_code:
@@ -241,6 +257,15 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                 "No pending code to save. Learn a code first.",
                 translation_domain=DOMAIN,
                 translation_key="no_pending_code",
+            )
+
+        # Reject duplicate names (same check as the Learn button path)
+        if storage.name_exists(name):
+            raise ServiceValidationError(
+                f"A code named {name} already exists",
+                translation_domain=DOMAIN,
+                translation_key="name_exists",
+                translation_placeholders={"name": name},
             )
 
         # Parse tags
@@ -256,10 +281,22 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             notes=notes,
         )
 
+        # Persist last-learned metadata so the sensors survive the reload
+        # below and HA restarts.
+        await storage.async_set_last_learned(
+            name=name,
+            timestamp=pending.timestamp,
+            pulse_count=len(pending.pulses),
+        )
+        data.last_learned_name = name
+        data.last_learned_timestamp = pending.timestamp
+        data.last_learned_pulse_count = len(pending.pulses)
+
         _LOGGER.info("Saved pending code as: %s", name)
 
-        # Clear pending code
-        learning_session.clear_pending()
+        # Clear pending code before reloading so the session teardown does
+        # not race the reload's cleanup of the same session.
+        await learning_session.async_clear_pending()
 
         # Reload entry to create new button entity
         await hass.config_entries.async_reload(entry_id)
@@ -280,14 +317,3 @@ async def async_setup_services(hass: HomeAssistant) -> None:
     hass.services.async_register(
         DOMAIN, SERVICE_SAVE_PENDING, handle_save_pending, schema=SAVE_PENDING_SCHEMA
     )
-
-
-async def async_unload_services(hass: HomeAssistant) -> None:
-    """Unload OpenIRBlaster services."""
-    _LOGGER.info("Unloading OpenIRBlaster services")
-
-    hass.services.async_remove(DOMAIN, SERVICE_LEARN_START)
-    hass.services.async_remove(DOMAIN, SERVICE_SEND_CODE)
-    hass.services.async_remove(DOMAIN, SERVICE_DELETE_CODE)
-    hass.services.async_remove(DOMAIN, SERVICE_RENAME_CODE)
-    hass.services.async_remove(DOMAIN, SERVICE_SAVE_PENDING)

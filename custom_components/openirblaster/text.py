@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import logging
 
-from homeassistant.components.text import TextEntity
+from homeassistant.components.text import TextEntity, TextMode
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import (
@@ -18,6 +18,9 @@ from .const import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+# Push-based integration: no parallel polling coordination needed
+PARALLEL_UPDATES = 0
 
 
 async def async_setup_entry(
@@ -40,7 +43,7 @@ class OpenIRBlasterCodeNameText(TextEntity):
     _attr_translation_key = "code_name_input"
     _attr_native_max = 100
     _attr_native_min = 0
-    _attr_mode = "text"
+    _attr_mode = TextMode.TEXT
 
     def __init__(self, entry: ConfigEntry) -> None:
         """Initialize the text entity."""

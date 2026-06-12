@@ -78,9 +78,19 @@ async def setup_esphome_integration(hass: HomeAssistant):
 
 
 @pytest.fixture
-def mock_config_entry_data():
-    """Return mock config entry data."""
+def mock_config_entry_data(hass: HomeAssistant):
+    """Return mock config entry data.
+
+    Also registers the matching mock ESPHome send_ir_raw service so entry
+    setup passes the device-online check (setup raises ConfigEntryNotReady
+    when the service is missing). Tests that need their own handler can
+    re-register it; tests for the not-ready path remove it.
+    """
     from custom_components.openirblaster.const import CONF_ESPHOME_SERVICE_NAME
+
+    hass.services.async_register(
+        "esphome", "openirblaster_test_send_ir_raw", AsyncMock()
+    )
 
     return {
         CONF_ESPHOME_DEVICE_NAME: "openirblaster_test",
@@ -91,9 +101,17 @@ def mock_config_entry_data():
 
 
 @pytest.fixture
-def mock_config_entry_data_with_mac():
-    """Return mock config entry data with MAC address."""
+def mock_config_entry_data_with_mac(hass: HomeAssistant):
+    """Return mock config entry data with MAC address.
+
+    Registers the mock ESPHome service for the same reason as
+    mock_config_entry_data.
+    """
     from custom_components.openirblaster.const import CONF_ESPHOME_SERVICE_NAME
+
+    hass.services.async_register(
+        "esphome", "openirblaster_test_send_ir_raw", AsyncMock()
+    )
 
     return {
         CONF_ESPHOME_DEVICE_NAME: "openirblaster_test",

@@ -29,8 +29,11 @@ STATE_SAVED = "saved"
 STATE_CANCELLED = "cancelled"
 STATE_TIMEOUT = "timeout"
 
-# Storage
+# Storage. Schema changes must bump STORAGE_VERSION (major, breaking) or
+# STORAGE_MINOR_VERSION (minor, additive) and add a migration step in
+# storage.OpenIRBlasterStore._async_migrate_func.
 STORAGE_VERSION = 1
+STORAGE_MINOR_VERSION = 1
 STORAGE_KEY_PREFIX = "openirblaster_"
 
 # Services

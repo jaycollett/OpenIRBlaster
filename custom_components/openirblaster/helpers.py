@@ -9,13 +9,79 @@ if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
     from homeassistant.core import HomeAssistant
 
+from homeassistant.core import callback
+from homeassistant.helpers import entity_registry as er, issue_registry as ir
+
 from .const import (
     CONF_ESPHOME_DEVICE_NAME,
     CONF_ESPHOME_SERVICE_NAME,
     DOMAIN,
+    UNIQUE_ID_CODE_BUTTON,
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+
+@callback
+def async_flag_send_service_missing(hass: HomeAssistant, entry_id: str) -> None:
+    """Raise a repair: the ESPHome send service vanished after setup.
+
+    Setup-time absence raises ConfigEntryNotReady instead; this repair
+    covers the case where the service disappears later (device renamed or
+    offline) and a send fails.
+    """
+    entry = hass.config_entries.async_get_entry(entry_id)
+    ir.async_create_issue(
+        hass,
+        DOMAIN,
+        f"esphome_service_missing_{entry_id}",
+        is_fixable=False,
+        severity=ir.IssueSeverity.ERROR,
+        translation_key="esphome_service_missing",
+        translation_placeholders={
+            "name": entry.title if entry else entry_id,
+        },
+    )
+
+
+@callback
+def async_clear_send_service_missing(hass: HomeAssistant, entry_id: str) -> None:
+    """Clear the missing-service repair after a successful send."""
+    ir.async_delete_issue(hass, DOMAIN, f"esphome_service_missing_{entry_id}")
+
+
+def async_remove_code_entities(
+    hass: HomeAssistant, entry_id: str, code_id: str
+) -> None:
+    """Remove entity-registry entries for a deleted code's button entities.
+
+    Without this, deleting a code leaves its button registered and the
+    entity shows up as "no longer provided" after the entry reloads.
+    Shared by the options-flow delete path and the delete_code service.
+    """
+    registry = er.async_get(hass)
+    send_button_unique_id = UNIQUE_ID_CODE_BUTTON.format(
+        entry_id=entry_id, code_id=code_id
+    )
+    delete_button_unique_id = f"{entry_id}_{code_id}_delete"
+
+    send_button_entity_id = registry.async_get_entity_id(
+        "button", DOMAIN, send_button_unique_id
+    )
+    delete_button_entity_id = registry.async_get_entity_id(
+        "button", DOMAIN, delete_button_unique_id
+    )
+
+    candidates = {send_button_entity_id, delete_button_entity_id}
+    for entity in er.async_entries_for_config_entry(registry, entry_id):
+        if entity.domain != "button":
+            continue
+        if entity.unique_id in {send_button_unique_id, delete_button_unique_id}:
+            candidates.add(entity.entity_id)
+
+    for entity_id in candidates:
+        if entity_id:
+            registry.async_remove(entity_id)
 
 
 def discover_esphome_service(hass: HomeAssistant, entry: ConfigEntry) -> str | None:
@@ -72,11 +138,16 @@ def get_esphome_service(hass: HomeAssistant, entry_id: str) -> str | None:
     """Get the cached ESPHome service name for an entry.
 
     This is the primary function that button.py and services.py should use.
-    The service name is discovered at integration load time.
-    If users rename their ESPHome device, they need to reload the integration.
+    The service name is discovered at integration load time and stored in
+    the entry's runtime_data. If users rename their ESPHome device, they
+    need to reload the integration.
 
     Returns the service name or None if not available.
     """
-    if DOMAIN not in hass.data or entry_id not in hass.data[DOMAIN]:
+    entry = hass.config_entries.async_get_entry(entry_id)
+    if entry is None or entry.domain != DOMAIN:
         return None
-    return hass.data[DOMAIN][entry_id].get("esphome_service_name")
+    data = getattr(entry, "runtime_data", None)
+    if data is None:
+        return None
+    return getattr(data, "esphome_service_name", None)
