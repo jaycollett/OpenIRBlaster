@@ -76,7 +76,13 @@ For hardware build instructions and the complete bill of materials (~$22-25 tota
 
 That's it! You can now press the new button to transmit the IR code.
 
-### 3. Use in Automations
+### 3. Manage Your Codes
+
+- **Rename:** call the `openirblaster.rename_code` service with the code's `id` and a `new_name`. The button updates immediately; its entity ID and your automations are unaffected.
+- **Delete:** go to **Settings** → **Devices & Services** → **OpenIRBlaster** → **Configure** → **Manage IR Codes**, pick the code, and confirm. Deletion is always a two-step confirm, and the button disappears immediately.
+- Codes can also be saved, sent, renamed, and deleted from scripts via the `openirblaster.*` services, several of which can return response data. See the [Home Assistant Integration](docs/home-assistant-integration.md) docs for the full reference.
+
+### 4. Use in Automations
 
 ```yaml
 automation:
