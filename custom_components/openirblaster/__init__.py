@@ -17,11 +17,20 @@ from homeassistant.helpers import (
 from homeassistant.helpers.typing import ConfigType
 
 from .const import (
+    ATTR_CODE_ID,
     CONF_DEVICE_ID,
     CONF_LEARNING_SWITCH_ENTITY_ID,
     CONF_MAC_ADDRESS,
     DOMAIN,
     STATE_ARMED,
+    UNIQUE_ID_CODE_ACTIVITY_EVENT,
+    UNIQUE_ID_CODE_BUTTON,
+    UNIQUE_ID_CODE_NAME_INPUT,
+    UNIQUE_ID_LAST_LEARNED_AT,
+    UNIQUE_ID_LAST_LEARNED_LEN,
+    UNIQUE_ID_LAST_LEARNED_NAME,
+    UNIQUE_ID_LEARN_BUTTON,
+    UNIQUE_ID_SEND_LAST_BUTTON,
 )
 from .data import OpenIRBlasterConfigEntry, OpenIRBlasterData
 from .helpers import (
@@ -219,6 +228,55 @@ def _async_migrate_controls_device(
         device_registry.async_remove_device(controls_device.id)
 
 
+def _async_remove_orphaned_entities(
+    hass: HomeAssistant,
+    entry: OpenIRBlasterConfigEntry,
+    storage: OpenIRBlasterStorage,
+) -> None:
+    """Sweep this entry's registry entries no current feature owns.
+
+    Older versions left registry entries behind: the per-code DELETE
+    buttons (removed January 2026 without registry cleanup, unique_id
+    pattern {entry_id}_{code_id}_delete) and codes deleted by versions
+    that lacked deletion cleanup. They linger as dead disabled/hidden
+    entities in the UI.
+
+    The authoritative expected set is every static entity unique_id plus
+    one code button per code currently in storage; anything else owned by
+    this integration AND this config entry is removed. A stored code whose
+    id itself ends in "_delete" is in the expected set, so it is kept.
+    Idempotent and cheap: it only iterates this entry's own registry
+    entries, so it is safe to run on every setup.
+    """
+    entry_id = entry.entry_id
+    expected_unique_ids = {
+        UNIQUE_ID_LEARN_BUTTON.format(entry_id=entry_id),
+        UNIQUE_ID_SEND_LAST_BUTTON.format(entry_id=entry_id),
+        UNIQUE_ID_CODE_NAME_INPUT.format(entry_id=entry_id),
+        UNIQUE_ID_LAST_LEARNED_NAME.format(entry_id=entry_id),
+        UNIQUE_ID_LAST_LEARNED_AT.format(entry_id=entry_id),
+        UNIQUE_ID_LAST_LEARNED_LEN.format(entry_id=entry_id),
+        UNIQUE_ID_CODE_ACTIVITY_EVENT.format(entry_id=entry_id),
+    }
+    expected_unique_ids.update(
+        UNIQUE_ID_CODE_BUTTON.format(entry_id=entry_id, code_id=code[ATTR_CODE_ID])
+        for code in storage.get_codes()
+    )
+
+    entity_registry = er.async_get(hass)
+    for reg_entry in er.async_entries_for_config_entry(entity_registry, entry_id):
+        if reg_entry.platform != DOMAIN:
+            continue
+        if reg_entry.unique_id in expected_unique_ids:
+            continue
+        _LOGGER.info(
+            "Removing orphaned entity registry entry %s (unique_id %s)",
+            reg_entry.entity_id,
+            reg_entry.unique_id,
+        )
+        entity_registry.async_remove(reg_entry.entity_id)
+
+
 async def async_setup_entry(
     hass: HomeAssistant, entry: OpenIRBlasterConfigEntry
 ) -> bool:
@@ -343,6 +401,11 @@ async def async_setup_entry(
     _async_migrate_controls_device(
         hass, {device_identifier, device_id}, main_device.id
     )
+
+    # Sweep registry entries no current feature owns (e.g. the old
+    # per-code delete buttons). Runs before platform setup so legitimate
+    # entities simply re-register afterwards.
+    _async_remove_orphaned_entities(hass, entry, storage)
 
     # Store runtime objects on the config entry
     entry.runtime_data = OpenIRBlasterData(

@@ -8,7 +8,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import device_registry as dr, entity_registry as er
 
 from custom_components.openirblaster import async_setup_entry, async_unload_entry
 from custom_components.openirblaster.const import CONF_MAC_ADDRESS, DOMAIN
@@ -590,3 +590,217 @@ async def test_learning_switch_reset_skipped_when_session_armed(
 
     # The reset bailed instead of disarming the active session
     assert len(turn_off_calls) == 0
+
+
+# ---------------------------------------------------------------------------
+# Orphaned entity registry sweep (old per-code delete buttons, codes deleted
+# by versions without registry cleanup).
+# ---------------------------------------------------------------------------
+
+_LEGIT_ENTITY_SPECS = (
+    ("button", "{entry_id}_learn"),
+    ("button", "{entry_id}_send_last"),
+    ("text", "{entry_id}_code_name_input"),
+    ("sensor", "{entry_id}_last_learned_name"),
+    ("sensor", "{entry_id}_last_learned_at"),
+    ("sensor", "{entry_id}_last_learned_len"),
+    ("event", "{entry_id}_code_activity"),
+    ("button", "{entry_id}_rgbyellow"),
+    ("button", "{entry_id}_thing_delete"),
+)
+
+
+def _seed_storage_with_codes(hass_storage: dict, entry: MockConfigEntry) -> None:
+    """Pre-seed the entry's code library so it is loaded at first setup."""
+    key = f"openirblaster_{entry.entry_id}"
+    hass_storage[key] = {
+        "version": 1,
+        "minor_version": 1,
+        "key": key,
+        "data": {
+            "version": 1,
+            "device": {
+                "config_entry_id": entry.entry_id,
+                "name": "OpenIRBlaster",
+                "device_id": "openirblaster-test123",
+            },
+            "codes": [
+                {
+                    "id": "rgbyellow",
+                    "name": "rgbyellow",
+                    "carrier_hz": 38000,
+                    "pulses": [9000, -4500],
+                    "created_at": "2026-01-01T00:00:00+00:00",
+                    "updated_at": "2026-01-01T00:00:00+00:00",
+                    "tags": [],
+                    "notes": "",
+                },
+                {
+                    # A code literally named "Thing Delete": its id ends in
+                    # _delete, matching the legacy orphan pattern, but it is
+                    # in storage so the sweep must keep its button.
+                    "id": "thing_delete",
+                    "name": "Thing Delete",
+                    "carrier_hz": 38000,
+                    "pulses": [9000, -4500],
+                    "created_at": "2026-01-01T00:00:00+00:00",
+                    "updated_at": "2026-01-01T00:00:00+00:00",
+                    "tags": [],
+                    "notes": "",
+                },
+            ],
+        },
+    }
+
+
+def _seed_legit_entities(
+    registry: er.EntityRegistry, entry: MockConfigEntry
+) -> None:
+    for domain_, uid_template in _LEGIT_ENTITY_SPECS:
+        registry.async_get_or_create(
+            domain=domain_,
+            platform=DOMAIN,
+            unique_id=uid_template.format(entry_id=entry.entry_id),
+            config_entry=entry,
+        )
+
+
+async def test_orphaned_registry_entries_swept(
+    hass: HomeAssistant, hass_storage: dict, mock_config_entry_data: dict
+) -> None:
+    """Setup removes legacy orphans and keeps every legitimate entity.
+
+    Mirrors the real-world install: per-code DELETE buttons from the
+    feature removed in January 2026 linger as disabled registry entries
+    ({entry_id}_{code_id}_delete, disabled_by=integration), plus codes
+    deleted by versions without registry cleanup.
+    """
+    entry = MockConfigEntry(domain=DOMAIN, data=mock_config_entry_data)
+    entry.add_to_hass(hass)
+    _seed_storage_with_codes(hass_storage, entry)
+
+    registry = er.async_get(hass)
+    _seed_legit_entities(registry, entry)
+
+    # Real-world orphan: old per-code delete button, disabled by integration
+    orphan_delete = registry.async_get_or_create(
+        domain="button",
+        platform=DOMAIN,
+        unique_id=f"{entry.entry_id}_rgbyellow_delete",
+        config_entry=entry,
+        disabled_by=er.RegistryEntryDisabler.INTEGRATION,
+    )
+    # Orphan from a code deleted without registry cleanup
+    orphan_stale = registry.async_get_or_create(
+        domain="button",
+        platform=DOMAIN,
+        unique_id=f"{entry.entry_id}_long_gone_code",
+        config_entry=entry,
+    )
+
+    with patch(
+        "homeassistant.config_entries.ConfigEntries.async_forward_entry_setups",
+        return_value=True,
+    ):
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    # Orphans gone
+    assert registry.async_get(orphan_delete.entity_id) is None
+    assert registry.async_get(orphan_stale.entity_id) is None
+
+    # Everything legitimate intact, including the _delete-suffixed stored
+    # code's button (it is in storage, so it is authoritative)
+    for domain_, uid_template in _LEGIT_ENTITY_SPECS:
+        uid = uid_template.format(entry_id=entry.entry_id)
+        assert (
+            registry.async_get_entity_id(domain_, DOMAIN, uid) is not None
+        ), uid
+
+
+async def test_orphan_sweep_idempotent_across_reload(
+    hass: HomeAssistant, hass_storage: dict, mock_config_entry_data: dict
+) -> None:
+    """The sweep on every setup never erodes legitimate entities."""
+    entry = MockConfigEntry(domain=DOMAIN, data=mock_config_entry_data)
+    entry.add_to_hass(hass)
+    _seed_storage_with_codes(hass_storage, entry)
+
+    registry = er.async_get(hass)
+    _seed_legit_entities(registry, entry)
+
+    with patch(
+        "homeassistant.config_entries.ConfigEntries.async_forward_entry_setups",
+        return_value=True,
+    ), patch(
+        "homeassistant.config_entries.ConfigEntries.async_unload_platforms",
+        return_value=True,
+    ):
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        count_after_first = len(
+            er.async_entries_for_config_entry(registry, entry.entry_id)
+        )
+        assert count_after_first == len(_LEGIT_ENTITY_SPECS)
+
+        # Reload re-runs the sweep
+        assert await hass.config_entries.async_reload(entry.entry_id)
+        await hass.async_block_till_done()
+
+    assert (
+        len(er.async_entries_for_config_entry(registry, entry.entry_id))
+        == count_after_first
+    )
+    for domain_, uid_template in _LEGIT_ENTITY_SPECS:
+        uid = uid_template.format(entry_id=entry.entry_id)
+        assert registry.async_get_entity_id(domain_, DOMAIN, uid) is not None
+
+
+async def test_orphan_sweep_spares_other_platforms_and_entries(
+    hass: HomeAssistant, hass_storage: dict, mock_config_entry_data: dict
+) -> None:
+    """The sweep never touches other platforms or other config entries."""
+    entry = MockConfigEntry(domain=DOMAIN, data=mock_config_entry_data)
+    entry.add_to_hass(hass)
+    _seed_storage_with_codes(hass_storage, entry)
+
+    registry = er.async_get(hass)
+    _seed_legit_entities(registry, entry)
+
+    # Another platform's entity attached to OUR config entry: even with an
+    # orphan-looking unique_id, it is not ours to remove.
+    other_platform = registry.async_get_or_create(
+        domain="sensor",
+        platform="esphome",
+        unique_id=f"{entry.entry_id}_rgbyellow_delete",
+        config_entry=entry,
+    )
+
+    # Our platform, but a DIFFERENT config entry: outside this sweep's
+    # scope entirely. Disabled so component setup does not set it up too
+    # (its own sweep would then legitimately run).
+    from homeassistant.config_entries import ConfigEntryDisabler
+
+    other_entry = MockConfigEntry(
+        domain=DOMAIN,
+        data=dict(mock_config_entry_data),
+        disabled_by=ConfigEntryDisabler.USER,
+    )
+    other_entry.add_to_hass(hass)
+    other_entry_orphan = registry.async_get_or_create(
+        domain="button",
+        platform=DOMAIN,
+        unique_id=f"{other_entry.entry_id}_rgbyellow_delete",
+        config_entry=other_entry,
+    )
+
+    with patch(
+        "homeassistant.config_entries.ConfigEntries.async_forward_entry_setups",
+        return_value=True,
+    ):
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    assert registry.async_get(other_platform.entity_id) is not None
+    assert registry.async_get(other_entry_orphan.entity_id) is not None
