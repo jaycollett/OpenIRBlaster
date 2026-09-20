@@ -1,13 +1,20 @@
 {
   "domain": "openirblaster",
   "name": "OpenIRBlaster",
-  "codeowners": ["@jaycollett"],
+  "codeowners": [
+    "@jaycollett"
+  ],
+  "after_dependencies": [
+    "infrared"
+  ],
   "config_flow": true,
-  "dependencies": ["esphome"],
+  "dependencies": [
+    "esphome"
+  ],
   "documentation": "https://github.com/jaycollett/OpenIRBlaster",
   "integration_type": "device",
   "iot_class": "local_push",
   "issue_tracker": "https://github.com/jaycollett/OpenIRBlaster/issues",
   "requirements": [],
-  "version": "1.2.3"
+  "version": "1.3.0"
 }

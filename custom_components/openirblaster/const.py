@@ -43,6 +43,21 @@ SERVICE_SEND_CODE = "send_code"
 SERVICE_DELETE_CODE = "delete_code"
 SERVICE_RENAME_CODE = "rename_code"
 SERVICE_SAVE_PENDING = "save_pending"
+SERVICE_EXPORT_TO_HAIR = "export_to_hair"
+# Pluckable contract (HAIR docs/making-your-integration-pluckable.md):
+# replay a stored code by name through a caller-chosen emitter.
+SERVICE_SEND_LEARNED_IR_COMMAND = "send_learned_ir_command"
+
+# Where the HAIR export writes, relative to the Home Assistant config
+# directory. This is the directory HAIR scans for code libraries.
+WIG_OUTPUT_SUBDIR = "hair/wigs"
+
+# Deprecation (v1.2.4). Home Assistant core gained an `infrared` entity
+# domain in 2026.4, and HAIR builds a full IR code manager on top of it.
+# This integration is winding down; the repair issue points users at the
+# export before they uninstall.
+ISSUE_DEPRECATED = "deprecated_integration"
+HAIR_URL = "https://github.com/DAB-LABS/HAIR"
 
 # Attributes for learned event payload
 ATTR_DEVICE_ID = "device_id"
@@ -82,3 +97,4 @@ UNIQUE_ID_CODE_ACTIVITY_EVENT = "{entry_id}_code_activity"
 UNIQUE_ID_LAST_LEARNED_NAME = "{entry_id}_last_learned_name"
 UNIQUE_ID_LAST_LEARNED_AT = "{entry_id}_last_learned_at"
 UNIQUE_ID_LAST_LEARNED_LEN = "{entry_id}_last_learned_len"
+UNIQUE_ID_REMOTE = "{entry_id}_remote"

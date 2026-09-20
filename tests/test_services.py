@@ -19,6 +19,7 @@ from custom_components.openirblaster.const import (
     SERVICE_DELETE_CODE,
     SERVICE_LEARN_START,
     SERVICE_RENAME_CODE,
+    SERVICE_EXPORT_TO_HAIR,
     SERVICE_SAVE_PENDING,
     SERVICE_SEND_CODE,
 )
@@ -818,3 +819,120 @@ async def test_cancel_vs_capture_race_must_not_lose_code(
     await hass.async_block_till_done()
     assert session.state == STATE_RECEIVED
     assert session.pending_code is not None
+
+
+async def _loaded_entry(hass: HomeAssistant, data: dict) -> MockConfigEntry:
+    """Set up a loaded config entry without forwarding platforms."""
+    entry = MockConfigEntry(domain=DOMAIN, data=data, title="Living Room Blaster")
+    entry.add_to_hass(hass)
+    with patch(
+        "homeassistant.config_entries.ConfigEntries.async_forward_entry_setups",
+        return_value=True,
+    ):
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+    return entry
+
+
+async def test_export_to_hair_writes_wig_files(
+    hass: HomeAssistant, mock_config_entry_data: dict, tmp_path
+) -> None:
+    """The export writes into <config>/hair/wigs, where HAIR reads."""
+    import json
+    from pathlib import Path
+
+    hass.config.config_dir = str(tmp_path)
+    entry = await _loaded_entry(hass, mock_config_entry_data)
+
+    storage = entry.runtime_data.storage
+    await storage.async_add_code(
+        name="TV Power", carrier_hz=36000, pulses=[9000, -4500, 560, -560]
+    )
+
+    response = await hass.services.async_call(
+        DOMAIN,
+        SERVICE_EXPORT_TO_HAIR,
+        {"config_entry_id": entry.entry_id},
+        blocking=True,
+        return_response=True,
+    )
+
+    assert response["exported"] == 1
+    assert response["skipped"] == 0
+
+    written = list((tmp_path / "hair" / "wigs").glob("*.wig.json"))
+    assert len(written) == 1
+
+    wig = json.loads(Path(written[0]).read_text())
+    assert wig["format"] == "hair-wig/3"
+    assert wig["name"] == "Living Room Blaster"
+    assert [s["alias"] for s in wig["signals"]] == ["TV Power"]
+    # 36 kHz must survive, encoded in the Pronto preamble rather than a
+    # carrier field, which the wig format does not have.
+    assert round(4145146 / int(wig["signals"][0]["pronto"].split(" ")[1], 16)) == 36045
+
+
+async def test_export_to_hair_leaves_storage_untouched(
+    hass: HomeAssistant, mock_config_entry_data: dict, tmp_path
+) -> None:
+    """Exporting must not remove or alter the codes it exported."""
+    hass.config.config_dir = str(tmp_path)
+    entry = await _loaded_entry(hass, mock_config_entry_data)
+
+    storage = entry.runtime_data.storage
+    await storage.async_add_code(
+        name="TV Power", carrier_hz=38000, pulses=[9000, -4500, 560, -560]
+    )
+    before = [dict(code) for code in storage.get_codes()]
+
+    await hass.services.async_call(
+        DOMAIN,
+        SERVICE_EXPORT_TO_HAIR,
+        {"config_entry_id": entry.entry_id},
+        blocking=True,
+    )
+
+    assert storage.get_codes() == before
+
+
+async def test_export_to_hair_rejects_an_empty_library(
+    hass: HomeAssistant, mock_config_entry_data: dict, tmp_path
+) -> None:
+    """An empty library is a validation error, not an empty file."""
+    hass.config.config_dir = str(tmp_path)
+    entry = await _loaded_entry(hass, mock_config_entry_data)
+
+    with pytest.raises(ServiceValidationError) as excinfo:
+        await hass.services.async_call(
+            DOMAIN,
+            SERVICE_EXPORT_TO_HAIR,
+            {"config_entry_id": entry.entry_id},
+            blocking=True,
+        )
+
+    assert excinfo.value.translation_key == "no_codes_to_export"
+
+
+async def test_export_to_hair_grouping(
+    hass: HomeAssistant, mock_config_entry_data: dict, tmp_path
+) -> None:
+    """group_by splits one library into one file per remote."""
+    hass.config.config_dir = str(tmp_path)
+    entry = await _loaded_entry(hass, mock_config_entry_data)
+
+    storage = entry.runtime_data.storage
+    for name in ("TV Power", "TV Mute", "Soundbar Play"):
+        await storage.async_add_code(
+            name=name, carrier_hz=38000, pulses=[9000, -4500, 560, -560]
+        )
+
+    response = await hass.services.async_call(
+        DOMAIN,
+        SERVICE_EXPORT_TO_HAIR,
+        {"config_entry_id": entry.entry_id, "group_by": "prefix"},
+        blocking=True,
+        return_response=True,
+    )
+
+    assert response["exported"] == 3
+    assert len(response["files"]) == 2

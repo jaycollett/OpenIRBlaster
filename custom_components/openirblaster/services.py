@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from functools import partial
+from pathlib import Path
 
 import voluptuous as vol
 
@@ -29,6 +31,7 @@ from .const import (
     ATTR_PULSES,
     DOMAIN,
     SERVICE_DELETE_CODE,
+    SERVICE_EXPORT_TO_HAIR,
     SERVICE_LEARN_CANCEL,
     SERVICE_LEARN_START,
     SERVICE_RENAME_CODE,
@@ -40,6 +43,7 @@ from .const import (
     STATE_CANCELLED,
     STATE_RECEIVED,
     STATE_TIMEOUT,
+    WIG_OUTPUT_SUBDIR,
 )
 from .data import OpenIRBlasterData
 from .helpers import (
@@ -49,6 +53,12 @@ from .helpers import (
     get_esphome_service,
 )
 from .learning import LearnedCode
+from .wig_export import (
+    GROUP_CHOICES,
+    GROUP_FILE,
+    WigExportError,
+    export_storage_data,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -100,6 +110,13 @@ SAVE_PENDING_SCHEMA = vol.Schema(
         vol.Required("name"): cv.string,
         vol.Optional("tags"): cv.string,  # Comma-separated tags
         vol.Optional("notes"): cv.string,
+    }
+)
+
+EXPORT_TO_HAIR_SCHEMA = vol.Schema(
+    {
+        vol.Required("config_entry_id"): cv.string,
+        vol.Optional("group_by", default=GROUP_FILE): vol.In(GROUP_CHOICES),
     }
 )
 
@@ -448,6 +465,80 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             }
         return None
 
+    async def handle_export_to_hair(call: ServiceCall) -> ServiceResponse:
+        """Write this entry's code library out as HAIR .wig.json files.
+
+        The export is read-only with respect to OpenIRBlaster: storage is
+        never touched, so a user can run this, check the result, and still
+        fall back to the integration if something is wrong.
+        """
+        entry_id = call.data["config_entry_id"]
+        group_by = call.data["group_by"]
+
+        entry = hass.config_entries.async_get_entry(entry_id)
+        data = _async_get_entry_data(hass, entry_id)
+
+        codes = data.storage.get_codes()
+        if not codes:
+            raise ServiceValidationError(
+                "There are no stored codes to export",
+                translation_domain=DOMAIN,
+                translation_key="no_codes_to_export",
+            )
+
+        # The entry title is what the user sees in the UI, so it is the
+        # most recognisable name to give the exported remote.
+        device_name = entry.title if entry else "OpenIRBlaster"
+        storage_data = {
+            "device": {"name": device_name},
+            "codes": codes,
+        }
+
+        out_dir = Path(hass.config.path(WIG_OUTPUT_SUBDIR))
+
+        try:
+            result = await hass.async_add_executor_job(
+                partial(
+                    export_storage_data,
+                    storage_data,
+                    out_dir,
+                    group_by=group_by,
+                    source_filename=f"openirblaster_{entry_id}.json",
+                )
+            )
+        except WigExportError as err:
+            raise HomeAssistantError(f"Export failed: {err}") from err
+        except OSError as err:
+            raise HomeAssistantError(
+                f"Could not write to {out_dir}: {err}"
+            ) from err
+
+        if not result.files:
+            raise HomeAssistantError(
+                "No codes could be converted; nothing was written. "
+                "Check the log for per-code reasons."
+            )
+
+        for line in result.receipts:
+            _LOGGER.info("Export note: %s", line)
+
+        _LOGGER.info(
+            "Exported %d code(s) to %d wig file(s) in %s",
+            result.signal_count,
+            len(result.files),
+            out_dir,
+        )
+
+        if call.return_response:
+            return {
+                "directory": str(out_dir),
+                "files": [str(path) for path in result.files],
+                "exported": result.signal_count,
+                "skipped": result.skipped,
+                "notes": result.receipts,
+            }
+        return None
+
     # Register services
     hass.services.async_register(
         DOMAIN,
@@ -477,5 +568,12 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         SERVICE_SAVE_PENDING,
         handle_save_pending,
         schema=SAVE_PENDING_SCHEMA,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_EXPORT_TO_HAIR,
+        handle_export_to_hair,
+        schema=EXPORT_TO_HAIR_SCHEMA,
         supports_response=SupportsResponse.OPTIONAL,
     )

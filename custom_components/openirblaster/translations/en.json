@@ -112,6 +112,11 @@
       "code_name_input": {
         "name": "Code Name"
       }
+    },
+    "remote": {
+      "remote": {
+        "name": "Remote"
+      }
     }
   },
   "services": {
@@ -218,6 +223,38 @@
           "description": "Optional notes about the code."
         }
       }
+    },
+    "export_to_hair": {
+      "name": "Export codes to HAIR",
+      "description": "Writes this device's stored IR codes to hair/wigs in your Home Assistant config directory, in the .wig.json format HAIR reads. Your existing codes are not changed or removed.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Device",
+          "description": "The OpenIRBlaster device whose codes you want to export."
+        },
+        "group_by": {
+          "name": "Split into",
+          "description": "How to divide the codes into files. HAIR treats one file as one remote, so splitting by tag or by the first word of each code name gives you one remote per device instead of a single long list."
+        }
+      }
+    },
+    "send_learned_ir_command": {
+      "name": "Send learned IR command",
+      "description": "Replays a stored code through an infrared emitter you choose. Aim it at this device's own emitter and the code goes on the air as usual. Aim it at HAIR's capture entity and HAIR keeps the code, which is how you move a library across without learning every button again.",
+      "fields": {
+        "command": {
+          "name": "Command",
+          "description": "The name the code was learned under, for example TV Power."
+        },
+        "emitter_entity_id": {
+          "name": "Emitter",
+          "description": "The infrared emitter entity to send through."
+        },
+        "device": {
+          "name": "Appliance",
+          "description": "Accepted and ignored. The OpenIRBlaster code library is a flat list with no appliance grouping."
+        }
+      }
     }
   },
   "exceptions": {
@@ -241,6 +278,12 @@
     },
     "code_id_ambiguous": {
       "message": "IR code {code_id} exists on more than one OpenIRBlaster device. Pass config_entry_id to select which one to delete from."
+    },
+    "no_codes_to_export": {
+      "message": "There are no stored codes to export."
+    },
+    "code_name_not_found": {
+      "message": "No stored code named {name}."
     }
   },
   "issues": {
@@ -255,6 +298,10 @@
     "esphome_service_missing": {
       "title": "OpenIRBlaster cannot send IR codes",
       "description": "The ESPHome send service for {name} is no longer available, so IR codes cannot be sent. The device may be offline or was renamed in ESPHome. Check that the device is online, then reload or reconfigure the integration."
+    },
+    "deprecated_integration": {
+      "title": "OpenIRBlaster integration is deprecated",
+      "description": "Home Assistant now has a built-in infrared platform, and HAIR (https://github.com/DAB-LABS/HAIR) builds a full IR code manager on top of it, with a live sniffer, protocol decoding and import from other formats. This integration is winding down and will not gain new features.\n\nYour OpenIRBlaster hardware is not affected and keeps working.\n\nMove your codes across before you remove this integration or delete its storage file. Your stored codes hold the carrier frequency measured when each one was learned. Home Assistant's new infrared platform does not report a carrier, so anything you learn again afterwards comes back at the 38 kHz default. For a code that actually runs at 36 or 40 kHz, that difference is the code working or not working, and the measured value exists nowhere else.\n\nTwo ways across, and both keep your existing setup intact:\n\n1. Install HAIR and use its Plucker tab. It pulls the codes straight out of this integration, no files to move.\n2. Or run the \"Export codes to HAIR\" action here, which writes .wig.json files to hair/wigs in your config directory.\n\nEither way the carrier is preserved. Nothing is deleted, so check the result before you remove anything. This integration keeps working for now."
     }
   }
 }

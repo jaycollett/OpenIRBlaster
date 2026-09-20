@@ -11,7 +11,13 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr, entity_registry as er
 
 from custom_components.openirblaster import async_setup_entry, async_unload_entry
-from custom_components.openirblaster.const import CONF_MAC_ADDRESS, DOMAIN
+from custom_components.openirblaster.const import (
+    CONF_DEVICE_ID,
+    CONF_ESPHOME_DEVICE_NAME,
+    CONF_ESPHOME_SERVICE_NAME,
+    CONF_MAC_ADDRESS,
+    DOMAIN,
+)
 
 
 async def test_setup_entry(
@@ -804,3 +810,132 @@ async def test_orphan_sweep_spares_other_platforms_and_entries(
 
     assert registry.async_get(other_platform.entity_id) is not None
     assert registry.async_get(other_entry_orphan.entity_id) is not None
+
+
+async def test_setup_raises_deprecation_issue(
+    hass: HomeAssistant, mock_config_entry_data: dict
+) -> None:
+    """Setup surfaces the wind-down notice pointing at HAIR."""
+    from homeassistant.helpers import issue_registry as ir
+
+    from custom_components.openirblaster.const import ISSUE_DEPRECATED
+
+    entry = MockConfigEntry(domain=DOMAIN, data=mock_config_entry_data)
+    entry.add_to_hass(hass)
+
+    with patch(
+        "homeassistant.config_entries.ConfigEntries.async_forward_entry_setups",
+        return_value=True,
+    ):
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    issue = ir.async_get(hass).async_get_issue(DOMAIN, ISSUE_DEPRECATED)
+    assert issue is not None
+    assert issue.translation_key == "deprecated_integration"
+    assert issue.severity == ir.IssueSeverity.WARNING
+    # Informational: the migration happens outside this integration.
+    assert issue.is_fixable is False
+
+
+async def test_deprecation_issue_raised_once_for_two_entries(
+    hass: HomeAssistant, mock_config_entry_data: dict
+) -> None:
+    """Two blasters must not produce two identical notices."""
+    from homeassistant.helpers import issue_registry as ir
+
+    from custom_components.openirblaster.const import ISSUE_DEPRECATED
+
+    hass.services.async_register(
+        "esphome", "openirblaster_second_send_ir_raw", AsyncMock()
+    )
+    second_data = {
+        **mock_config_entry_data,
+        CONF_DEVICE_ID: "openirblaster-second",
+        CONF_ESPHOME_DEVICE_NAME: "openirblaster_second",
+        CONF_ESPHOME_SERVICE_NAME: "openirblaster_second_send_ir_raw",
+    }
+
+    for data in (mock_config_entry_data, second_data):
+        entry = MockConfigEntry(domain=DOMAIN, data=data)
+        entry.add_to_hass(hass)
+        with patch(
+            "homeassistant.config_entries.ConfigEntries.async_forward_entry_setups",
+            return_value=True,
+        ):
+            await hass.config_entries.async_setup(entry.entry_id)
+            await hass.async_block_till_done()
+
+    registry = ir.async_get(hass)
+    matching = [
+        issue
+        for (domain, key), issue in registry.issues.items()
+        if domain == DOMAIN and key == ISSUE_DEPRECATED
+    ]
+    assert len(matching) == 1
+
+
+async def test_deprecation_issue_cleared_when_last_entry_removed(
+    hass: HomeAssistant, mock_config_entry_data: dict
+) -> None:
+    """The notice is domain-keyed, so removal has to clear it by hand.
+
+    Otherwise it outlives the integration and tells the user to migrate
+    something they no longer have.
+    """
+    from homeassistant.helpers import issue_registry as ir
+
+    from custom_components.openirblaster.const import ISSUE_DEPRECATED
+
+    entry = MockConfigEntry(domain=DOMAIN, data=mock_config_entry_data)
+    entry.add_to_hass(hass)
+
+    with patch(
+        "homeassistant.config_entries.ConfigEntries.async_forward_entry_setups",
+        return_value=True,
+    ):
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    assert ir.async_get(hass).async_get_issue(DOMAIN, ISSUE_DEPRECATED) is not None
+
+    await hass.config_entries.async_remove(entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert ir.async_get(hass).async_get_issue(DOMAIN, ISSUE_DEPRECATED) is None
+
+
+async def test_deprecation_issue_survives_while_another_entry_remains(
+    hass: HomeAssistant, mock_config_entry_data: dict
+) -> None:
+    """Removing one of two blasters must not clear the notice."""
+    from homeassistant.helpers import issue_registry as ir
+
+    from custom_components.openirblaster.const import ISSUE_DEPRECATED
+
+    hass.services.async_register(
+        "esphome", "openirblaster_second_send_ir_raw", AsyncMock()
+    )
+    second_data = {
+        **mock_config_entry_data,
+        CONF_DEVICE_ID: "openirblaster-second",
+        CONF_ESPHOME_DEVICE_NAME: "openirblaster_second",
+        CONF_ESPHOME_SERVICE_NAME: "openirblaster_second_send_ir_raw",
+    }
+
+    entries = []
+    for data in (mock_config_entry_data, second_data):
+        entry = MockConfigEntry(domain=DOMAIN, data=data)
+        entry.add_to_hass(hass)
+        entries.append(entry)
+        with patch(
+            "homeassistant.config_entries.ConfigEntries.async_forward_entry_setups",
+            return_value=True,
+        ):
+            await hass.config_entries.async_setup(entry.entry_id)
+            await hass.async_block_till_done()
+
+    await hass.config_entries.async_remove(entries[0].entry_id)
+    await hass.async_block_till_done()
+
+    assert ir.async_get(hass).async_get_issue(DOMAIN, ISSUE_DEPRECATED) is not None

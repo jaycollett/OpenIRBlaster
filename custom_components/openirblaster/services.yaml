@@ -111,3 +111,46 @@ save_pending:
       example: "Samsung TV power button"
       selector:
         text:
+
+export_to_hair:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: openirblaster
+    group_by:
+      required: false
+      default: file
+      selector:
+        select:
+          mode: dropdown
+          options:
+            - label: "One file for everything"
+              value: file
+            - label: "One file per tag"
+              value: tag
+            - label: "One file per name prefix"
+              value: prefix
+
+send_learned_ir_command:
+  target:
+    entity:
+      integration: openirblaster
+      domain: remote
+  fields:
+    command:
+      required: true
+      example: "TV Power"
+      selector:
+        text:
+    emitter_entity_id:
+      required: true
+      example: "infrared.hair_tweezer"
+      selector:
+        entity:
+          domain: infrared
+    device:
+      required: false
+      selector:
+        text:

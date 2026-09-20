@@ -1,0 +1,26 @@
+# Pluckable registry entry: OpenIRBlaster.
+#
+# This file is for HAIR's custom_components/hair/pluckable/ directory, not
+# for this repository at runtime. It is kept here so it stays in step with
+# the service it describes. See docs/pluckable.md.
+#
+# Verified against openirblaster.send_learned_ir_command in 1.3.0.
+schema_version: 1
+name: OpenIRBlaster
+integration: openirblaster
+docs_url: https://github.com/jaycollett/OpenIRBlaster
+remote_feature_filter: LEARN_COMMAND
+
+service:
+  domain: openirblaster
+  name: send_learned_ir_command
+  target_param: entity_id
+  data:
+    command: "{command_name}"
+    emitter_entity_id: "{tweezer}"
+
+# No {appliance} placeholder above on purpose. The OpenIRBlaster code
+# library is a flat list of named codes with no appliance grouping, so
+# there is nothing for HAIR to pass through. The service accepts a
+# `device` field and ignores it, so a call that sends one still works.
+appliance_help: "Not used by OpenIRBlaster. Its codes are one flat list, so you can leave this empty."

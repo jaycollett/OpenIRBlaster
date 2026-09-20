@@ -53,6 +53,50 @@ _LOGGER = logging.getLogger(__name__)
 PARALLEL_UPDATES = 0
 
 
+async def async_send_code_via_esphome(
+    hass: HomeAssistant,
+    entry_id: str,
+    carrier_hz: int | None,
+    pulses: list[int],
+    label: str,
+) -> None:
+    """Transmit a code through this entry's ESPHome send_ir_raw service.
+
+    The original transmit path, shared by the code buttons, the send-last
+    button and the remote entity. Raises nothing: a failed send is logged
+    and surfaces as a repair issue, matching how the buttons have always
+    behaved.
+    """
+    service_name = get_esphome_service(hass, entry_id)
+    if not service_name:
+        _LOGGER.error(
+            "ESPHome service not found - cannot send %s. "
+            "Try reloading the integration if the device was renamed.",
+            label,
+        )
+        async_flag_send_service_missing(hass, entry_id)
+        return
+
+    try:
+        await hass.services.async_call(
+            "esphome",
+            service_name,
+            {"carrier_hz": carrier_hz, "code": pulses},
+            blocking=True,
+        )
+        _LOGGER.info("Sent %s", label)
+        async_clear_send_service_missing(hass, entry_id)
+    except ServiceNotFound:
+        _LOGGER.error(
+            "ESPHome service %s disappeared - cannot send %s",
+            service_name,
+            label,
+        )
+        async_flag_send_service_missing(hass, entry_id)
+    except Exception as err:
+        _LOGGER.error("Failed to send %s: %s", label, err)
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: OpenIRBlasterConfigEntry,
@@ -402,36 +446,13 @@ class SendLastButton(OpenIRBlasterButtonBase):
             _LOGGER.warning("No pending code to send")
             return
 
-        # Call ESPHome send_ir_raw service (discovered at integration load time)
-        service_name = get_esphome_service(self.hass, self._entry.entry_id)
-        if not service_name:
-            _LOGGER.error(
-                "ESPHome service not found - cannot send IR code. "
-                "Try reloading the integration if the device was renamed."
-            )
-            async_flag_send_service_missing(self.hass, self._entry.entry_id)
-            return
-
-        try:
-            await self.hass.services.async_call(
-                "esphome",
-                service_name,
-                {
-                    "carrier_hz": pending_code.carrier_hz,
-                    "code": pending_code.pulses,
-                },
-                blocking=True,
-            )
-            _LOGGER.info("Sent last learned code")
-            async_clear_send_service_missing(self.hass, self._entry.entry_id)
-        except ServiceNotFound:
-            _LOGGER.error(
-                "ESPHome service %s disappeared - cannot send last learned code",
-                service_name,
-            )
-            async_flag_send_service_missing(self.hass, self._entry.entry_id)
-        except Exception as err:
-            _LOGGER.error("Failed to send last learned code: %s", err)
+        await async_send_code_via_esphome(
+            self.hass,
+            self._entry.entry_id,
+            pending_code.carrier_hz,
+            pending_code.pulses,
+            label="last learned code",
+        )
 
 
 class CodeButton(OpenIRBlasterButtonBase):
@@ -477,36 +498,11 @@ class CodeButton(OpenIRBlasterButtonBase):
 
     async def async_press(self) -> None:
         """Handle the button press."""
-        # Call ESPHome send_ir_raw service (discovered at integration load time)
-        service_name = get_esphome_service(self.hass, self._entry.entry_id)
-        if not service_name:
-            _LOGGER.error(
-                "ESPHome service not found - cannot send IR code %s. "
-                "Try reloading the integration if the device was renamed.",
-                self._code_id,
-            )
-            async_flag_send_service_missing(self.hass, self._entry.entry_id)
-            return
-
-        try:
-            await self.hass.services.async_call(
-                "esphome",
-                service_name,
-                {
-                    "carrier_hz": self._carrier_hz,
-                    "code": self._pulses,
-                },
-                blocking=True,
-            )
-            _LOGGER.info("Sent code %s", self._code_id)
-            async_clear_send_service_missing(self.hass, self._entry.entry_id)
-        except ServiceNotFound:
-            _LOGGER.error(
-                "ESPHome service %s disappeared - cannot send IR code %s",
-                service_name,
-                self._code_id,
-            )
-            async_flag_send_service_missing(self.hass, self._entry.entry_id)
-        except Exception as err:
-            _LOGGER.error("Failed to send code %s: %s", self._code_id, err)
+        await async_send_code_via_esphome(
+            self.hass,
+            self._entry.entry_id,
+            self._carrier_hz,
+            self._pulses,
+            label=f"code {self._code_id}",
+        )
 

@@ -15,6 +15,48 @@ Accumulated non-obvious learnings about this project. Read before making archite
 
 Deliberate product decision: deleting a code always requires select-then-confirm (options flow) or an explicit service call with the exact code id. Never reintroduce one-click delete entities.
 
+### The project pivoted to hardware-first, and the integration is deprecated (2026-09-19)
+
+HAIR (https://github.com/DAB-LABS/HAIR, MIT, HACS default store) already did the
+infrared-domain migration this project had planned, with a live sniffer, protocol
+decoders, climate matrices and import from SmartIR/Flipper/LIRC/Girr. Competing was
+judged a bad use of time. HAIR owns no hardware or firmware; OpenIRBlaster does, and
+that is where the project continues. v1.2.4 deprecates the integration and ships the
+export. The working integration code was deliberately left in place; removal is a
+later decision.
+
+### Carrier frequency survives the HAIR export, and this is time-sensitive (2026-09-19)
+
+A `.wig.json` has no carrier field, which looks like data loss until you notice that
+the second word of a Pronto preamble IS the carrier, encoded as a divisor of a fixed
+reference frequency. Measured round-trip error is under 0.4% across the IR band
+(36 kHz reads back 36045, 40 kHz reads back 39857). So exporting preserves every
+captured carrier.
+
+Why it is time-sensitive: ESPHome delivers no carrier through `ir_rf_proxy`
+(`esphome/infrared.py` constructs `InfraredReceivedSignal(timings=...)` with no
+modulation), so codes re-learned through the new platform come back at the 38 kHz
+default. The existing `.storage` file is the only place those measured carriers
+exist. Users must export before deleting it.
+
+### The Pronto encoder is vendored on purpose (2026-09-19)
+
+`custom_components/openirblaster/wig_export.py` carries its own copy of the Pronto
+arithmetic rather than importing `infrared_protocols.commands.pronto`. Three reasons:
+the library requires Python 3.14 and CI runs 3.12, so a dependency would make the
+tool untestable in CI; the standalone script has to work for a user who already
+removed the integration; and it keeps the file copyable on its own.
+`tests/test_wig_export.py::test_matches_infrared_protocols_reference` asserts
+byte-for-byte agreement with the reference implementation and skips where the
+library is absent, so the duplication cannot drift silently.
+
+### Pronto cannot encode an odd-length pulse array (2026-09-19)
+
+Pronto encodes burst pairs, so a capture ending on a mark with no trailing space
+raises `ValueError: pronto timing data does not match the preamble burst pair
+counts`. The export appends a 38000us trailing gap and records it in the receipt
+rather than padding silently. Verified against `infrared_protocols` 10.1.0.
+
 ## Release and CI mechanics
 
 ### Every master push must bump the version (2026-06-12)

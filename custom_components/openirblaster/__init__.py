@@ -6,7 +6,7 @@ import logging
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers import (
     config_validation as cv,
@@ -22,6 +22,8 @@ from .const import (
     CONF_LEARNING_SWITCH_ENTITY_ID,
     CONF_MAC_ADDRESS,
     DOMAIN,
+    HAIR_URL,
+    ISSUE_DEPRECATED,
     STATE_ARMED,
     UNIQUE_ID_CODE_ACTIVITY_EVENT,
     UNIQUE_ID_CODE_BUTTON,
@@ -30,6 +32,7 @@ from .const import (
     UNIQUE_ID_LAST_LEARNED_LEN,
     UNIQUE_ID_LAST_LEARNED_NAME,
     UNIQUE_ID_LEARN_BUTTON,
+    UNIQUE_ID_REMOTE,
     UNIQUE_ID_SEND_LAST_BUTTON,
 )
 from .data import OpenIRBlasterConfigEntry, OpenIRBlasterData
@@ -44,7 +47,13 @@ from .storage import OpenIRBlasterStorage
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS = [Platform.BUTTON, Platform.EVENT, Platform.SENSOR, Platform.TEXT]
+PLATFORMS = [
+    Platform.BUTTON,
+    Platform.EVENT,
+    Platform.REMOTE,
+    Platform.SENSOR,
+    Platform.TEXT,
+]
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
@@ -53,6 +62,49 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Set up the OpenIRBlaster integration (register services once)."""
     await async_setup_services(hass)
     return True
+
+
+@callback
+def _async_flag_deprecation(hass: HomeAssistant) -> None:
+    """Raise the wind-down notice.
+
+    Home Assistant core gained an `infrared` entity domain in 2026.4 and
+    HAIR builds a full code manager on it, so this integration is no
+    longer the best way to use the hardware. The issue is informational
+    and not fixable in place: the action it asks for (export, then move
+    to HAIR) happens outside this integration. Raised once per HA start,
+    keyed on the domain rather than the entry, so a user with two
+    blasters gets one notice rather than two.
+    """
+    ir.async_create_issue(
+        hass,
+        DOMAIN,
+        ISSUE_DEPRECATED,
+        is_fixable=False,
+        severity=ir.IssueSeverity.WARNING,
+        translation_key="deprecated_integration",
+        learn_more_url=HAIR_URL,
+    )
+
+
+@callback
+def _async_clear_deprecation_if_last_entry(hass: HomeAssistant, entry_id: str) -> None:
+    """Drop the wind-down notice once the last entry is gone.
+
+    The issue is keyed on the domain rather than an entry, so nothing
+    removes it automatically. Without this it outlives the integration it
+    is talking about and the user is left with a notice telling them to
+    migrate something they no longer have.
+    """
+    remaining = [
+        entry
+        for entry in hass.config_entries.async_entries(DOMAIN)
+        if entry.entry_id != entry_id
+    ]
+    if remaining:
+        return
+
+    ir.async_delete_issue(hass, DOMAIN, ISSUE_DEPRECATED)
 
 
 def _lookup_mac_from_esphome_device(
@@ -257,6 +309,7 @@ def _async_remove_orphaned_entities(
         UNIQUE_ID_LAST_LEARNED_AT.format(entry_id=entry_id),
         UNIQUE_ID_LAST_LEARNED_LEN.format(entry_id=entry_id),
         UNIQUE_ID_CODE_ACTIVITY_EVENT.format(entry_id=entry_id),
+        UNIQUE_ID_REMOTE.format(entry_id=entry_id),
     }
     expected_unique_ids.update(
         UNIQUE_ID_CODE_BUTTON.format(entry_id=entry_id, code_id=code[ATTR_CODE_ID])
@@ -282,6 +335,8 @@ async def async_setup_entry(
 ) -> bool:
     """Set up OpenIRBlaster from a config entry."""
     _LOGGER.info("Setting up OpenIRBlaster integration for entry %s", entry.entry_id)
+
+    _async_flag_deprecation(hass)
 
     device_id = entry.data[CONF_DEVICE_ID]
     mac_address = entry.data.get(CONF_MAC_ADDRESS)
@@ -492,5 +547,9 @@ async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     # entries are removed automatically by core when the entry is removed.
     storage = OpenIRBlasterStorage(hass, entry.entry_id)
     await storage.async_delete()
+
+    # The deprecation notice is domain-keyed, so it has to be cleared by
+    # hand when the last entry goes.
+    _async_clear_deprecation_if_last_entry(hass, entry.entry_id)
 
     _LOGGER.info("Cleanup complete for entry %s: storage deleted", entry.entry_id)
