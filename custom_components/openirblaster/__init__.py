@@ -10,8 +10,14 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers import (
     config_validation as cv,
+)
+from homeassistant.helpers import (
     device_registry as dr,
+)
+from homeassistant.helpers import (
     entity_registry as er,
+)
+from homeassistant.helpers import (
     issue_registry as ir,
 )
 from homeassistant.helpers.typing import ConfigType
@@ -83,6 +89,9 @@ def _async_flag_deprecation(hass: HomeAssistant) -> None:
         is_fixable=False,
         severity=ir.IssueSeverity.WARNING,
         translation_key="deprecated_integration",
+        # hassfest rejects a URL written inline in a translation string, so
+        # the link is a placeholder filled in here.
+        translation_placeholders={"hair_url": HAIR_URL},
         learn_more_url=HAIR_URL,
     )
 
@@ -127,7 +136,7 @@ def _lookup_mac_from_esphome_device(
     """
     try:
         dev_reg = dr.async_get(hass)
-    except Exception as err:  # pragma: no cover - registry should always exist
+    except Exception as err:  # noqa: BLE001 - registry lookup is best effort  # pragma: no cover
         _LOGGER.debug("Device registry unavailable during MAC lookup: %s", err)
         return None
 
@@ -496,7 +505,7 @@ async def async_setup_entry(
                     "Reset learning mode left on from a previous run (%s)",
                     learning_switch_entity_id,
                 )
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - best effort; device may be offline at boot
                 _LOGGER.debug(
                     "Best-effort learning-mode reset failed: %s", err
                 )

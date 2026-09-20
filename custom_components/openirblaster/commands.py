@@ -45,7 +45,7 @@ def _import_infrared() -> tuple[Any, Any]:
     Going through the component sidesteps that entirely.
     """
     try:
-        from homeassistant.components.infrared import (  # noqa: PLC0415
+        from homeassistant.components.infrared import (
             InfraredCommand,
             async_send_command,
         )
@@ -67,7 +67,7 @@ def _raw_command_class() -> type:
     and what the platform has expected since 2026.5. No conversion is
     needed and none is done, so what was captured is what is sent.
     """
-    global _RAW_COMMAND_CLASS  # noqa: PLW0603
+    global _RAW_COMMAND_CLASS
 
     if _RAW_COMMAND_CLASS is not None:
         return _RAW_COMMAND_CLASS

@@ -47,8 +47,8 @@ async def async_get_config_entry_diagnostics(
     storage_version = None
 
     if storage is not None:
-        storage_device = storage._data.get("device")  # noqa: SLF001 - diagnostics needs internal snapshot
-        storage_version = storage._data.get("version")  # noqa: SLF001 - diagnostics needs internal snapshot
+        storage_device = storage._data.get("device")
+        storage_version = storage._data.get("version")
 
         for code in storage.get_codes():
             tags = code.get(ATTR_TAGS) or []

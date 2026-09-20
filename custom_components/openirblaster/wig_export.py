@@ -168,8 +168,10 @@ def normalize_pulses(pulses: list[int]) -> tuple[list[int], str | None]:
 
     return (
         [*pulses, TRAILING_GAP_US],
-        f"odd pulse count ({len(pulses)}), appended a "
-        f"{abs(TRAILING_GAP_US)}us trailing gap so it encodes as burst pairs",
+        (
+            f"odd pulse count ({len(pulses)}), appended a "
+            f"{abs(TRAILING_GAP_US)}us trailing gap so it encodes as burst pairs"
+        ),
     )
 
 

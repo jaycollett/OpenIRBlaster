@@ -183,22 +183,20 @@ class LastLearnedTimestampSensor(OpenIRBlasterSensorBase):
         last = self._storage_last_learned()
         if last and last.get("timestamp"):
             try:
-                return datetime.fromisoformat(
-                    last["timestamp"].replace("Z", "+00:00")
-                )
+                return datetime.fromisoformat(last["timestamp"])
             except ValueError:
                 _LOGGER.warning("Could not parse timestamp: %s", last["timestamp"])
         # Fallback to in-memory code
         if self._last_learned_code and self._last_learned_code.timestamp:
             try:
-                return datetime.fromisoformat(self._last_learned_code.timestamp.replace("Z", "+00:00"))
+                return datetime.fromisoformat(self._last_learned_code.timestamp)
             except ValueError:
                 _LOGGER.warning("Could not parse timestamp: %s", self._last_learned_code.timestamp)
         if self._restored_native_value:
             if isinstance(self._restored_native_value, datetime):
                 return self._restored_native_value
             try:
-                return datetime.fromisoformat(str(self._restored_native_value).replace("Z", "+00:00"))
+                return datetime.fromisoformat(str(self._restored_native_value))
             except ValueError:
                 _LOGGER.warning("Could not parse restored timestamp: %s", self._restored_native_value)
         return None

@@ -1,11 +1,11 @@
 {
   "domain": "openirblaster",
   "name": "OpenIRBlaster",
-  "codeowners": [
-    "@jaycollett"
-  ],
   "after_dependencies": [
     "infrared"
+  ],
+  "codeowners": [
+    "@jaycollett"
   ],
   "config_flow": true,
   "dependencies": [
@@ -16,5 +16,5 @@
   "iot_class": "local_push",
   "issue_tracker": "https://github.com/jaycollett/OpenIRBlaster/issues",
   "requirements": [],
-  "version": "1.3.0"
+  "version": "1.3.1"
 }

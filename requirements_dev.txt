@@ -7,7 +7,10 @@ pytest-cov>=4.1.0
 pytest-homeassistant-custom-component>=0.13.0
 
 # Code quality
-ruff>=0.1.0
+# Pinned, not floated. ruff 0.16 expanded its default rule set, which
+# turned a green CI red on code that had not changed. An unpinned linter
+# is a build that breaks on someone else's release schedule.
+ruff==0.16.8
 mypy>=1.7.0
 black>=23.11.0
 isort>=5.12.0

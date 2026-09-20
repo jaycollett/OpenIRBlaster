@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from homeassistant.core import HomeAssistant
@@ -139,7 +139,7 @@ class OpenIRBlasterStorage:
         # Generate unique ID from name
         code_id = self._generate_unique_id(name)
 
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         code = {
             ATTR_CODE_ID: code_id,
             ATTR_CODE_NAME: name,
@@ -185,7 +185,7 @@ class OpenIRBlasterStorage:
         if notes is not None:
             code[ATTR_NOTES] = notes
 
-        code[ATTR_UPDATED_AT] = datetime.now(timezone.utc).isoformat()
+        code[ATTR_UPDATED_AT] = datetime.now(UTC).isoformat()
 
         await self.async_save()
         _LOGGER.info("Updated code %s", code_id)

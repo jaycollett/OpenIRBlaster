@@ -8,11 +8,16 @@ import logging
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+
 from homeassistant.core import CALLBACK_TYPE, Event, HomeAssistant, callback
 from homeassistant.helpers import (
     device_registry as dr,
+)
+from homeassistant.helpers import (
     entity_registry as er,
+)
+from homeassistant.helpers import (
     issue_registry as ir,
 )
 from homeassistant.helpers.event import (
@@ -169,8 +174,8 @@ class LearningSession:
         for callback_fn in self._callbacks[:]:
             try:
                 callback_fn(self._state, self._pending_code)
-            except Exception as err:
-                _LOGGER.error("Error in learning session callback: %s", err, exc_info=True)
+            except Exception:
+                _LOGGER.exception("Error in learning session callback")
 
     async def async_start_learning(self, timeout: int | None = None) -> bool:
         """Start a learning session.
@@ -235,7 +240,7 @@ class LearningSession:
                 {"entity_id": self.learning_switch_entity_id},
                 blocking=True,
             )
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - device may be offline; caller handles the False return
             _LOGGER.error("Failed to enable learning mode: %s", err)
             # Release the claim. Nothing else was registered yet, so
             # reverting the state is the only cleanup needed.
@@ -319,7 +324,7 @@ class LearningSession:
                 {"entity_id": self.learning_switch_entity_id},
                 blocking=True,
             )
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - best-effort switch off; never fail teardown
             _LOGGER.error("Failed to disable learning mode: %s", err)
 
     def _resolve_text_sensor_entity_id(self) -> str | None:
@@ -338,7 +343,7 @@ class LearningSession:
         """
         try:
             ent_reg = er.async_get(self.hass)
-        except Exception as err:  # defensive: registry should always exist
+        except Exception as err:  # noqa: BLE001 - defensive; registry should always exist
             _LOGGER.debug("Entity registry unavailable: %s", err)
             ent_reg = None
 
@@ -368,7 +373,7 @@ class LearningSession:
                             return entity.entity_id
                         if entity_id.endswith(f"_{_CAPTURE_MARKER_OBJECT_ID_SUFFIX}"):
                             return entity.entity_id
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - lookup is a convenience; fall through to the slug path
                 _LOGGER.debug(
                     "Capture marker device-registry lookup failed: %s", err
                 )
@@ -469,7 +474,7 @@ class LearningSession:
                 {},
                 blocking=False,
             )
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - replay is a recovery path; its failure must not propagate
             _LOGGER.error(
                 "Failed to call replay service %s: %s", replay_service, err
             )
@@ -680,7 +685,7 @@ class LearningSession:
         self._pending_code = LearnedCode(
             carrier_hz=carrier_hz,
             pulses=pulses,
-            timestamp=timestamp or datetime.now(timezone.utc).isoformat(),
+            timestamp=timestamp or datetime.now(UTC).isoformat(),
             device_id=source_device_id,
             rssi=rssi,
         )
@@ -785,7 +790,7 @@ class LearningSession:
                     ),
                 },
             )
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - a missing notification must not break the timeout path
             _LOGGER.debug("Failed to create timeout notification: %s", err)
 
         self._state = STATE_TIMEOUT
@@ -846,7 +851,7 @@ class LearningSession:
                     ),
                 },
             )
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - a missing notification must not break the cancel path
             _LOGGER.debug("Failed to create cancel notification: %s", err)
 
         self._state = STATE_CANCELLED
@@ -896,7 +901,7 @@ class LearningSession:
                     {"entity_id": self.learning_switch_entity_id},
                     blocking=True,
                 )
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - cleanup runs on unload; never raise out of it
                 _LOGGER.debug(
                     "Best-effort learning-mode turn-off during cleanup "
                     "failed: %s",

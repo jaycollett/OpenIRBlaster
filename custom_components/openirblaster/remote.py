@@ -19,7 +19,6 @@ import logging
 from typing import Any
 
 import voluptuous as vol
-
 from homeassistant.components.remote import (
     ATTR_COMMAND,
     ATTR_DEVICE,
@@ -28,7 +27,8 @@ from homeassistant.components.remote import (
 )
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ServiceValidationError
-from homeassistant.helpers import config_validation as cv, entity_platform
+from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers import entity_platform
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
@@ -178,7 +178,7 @@ class OpenIRBlasterRemote(RemoteEntity):
         The ordinary remote.send_command path. Unchanged behaviour: codes
         go out through the ESPHome service as they always have.
         """
-        from .button import async_send_code_via_esphome  # noqa: PLC0415
+        from .button import async_send_code_via_esphome
 
         for name in command:
             code = self._find_code(name)

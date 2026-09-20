@@ -6,12 +6,13 @@ import logging
 from typing import Any
 
 import voluptuous as vol
-
 from homeassistant import config_entries
 from homeassistant.config_entries import ConfigEntryState, ConfigFlowResult
 from homeassistant.const import CONF_NAME
 from homeassistant.core import callback
-from homeassistant.helpers import device_registry as dr, entity_registry as er, selector
+from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import selector
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 
 from .const import (
@@ -98,10 +99,10 @@ class OpenIRBlasterConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             for entity in er.async_entries_for_device(entity_registry, device.id):
                 # ESPHome wifi_info mac_address sensor has unique_id ending with mac_address
                 # and original_name "MAC Address"
-                if entity.domain in ("sensor", "text_sensor"):
-                    if (
-                        entity.unique_id and "mac_address" in entity.unique_id.lower()
-                    ) or entity.original_name == "MAC Address":
+                if entity.domain in ("sensor", "text_sensor") and (
+                    (entity.unique_id and "mac_address" in entity.unique_id.lower())
+                    or entity.original_name == "MAC Address"
+                ):
                         # Get the sensor state
                         state = self.hass.states.get(entity.entity_id)
                         if state and state.state not in ("unknown", "unavailable", None, ""):

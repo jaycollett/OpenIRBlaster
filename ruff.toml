@@ -1,0 +1,5 @@
+# Ruff is pinned in requirements_dev.txt. This file pins the other half of
+# the behaviour: the target Python. Without it ruff infers a target from
+# whatever interpreter it finds, and CI runs 3.12 while local development
+# runs 3.14, which is enough on its own to make the two disagree.
+target-version = "py312"

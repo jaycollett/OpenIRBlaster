@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-
 from typing import Any
 
 from homeassistant.components.button import ButtonEntity
@@ -93,7 +92,7 @@ async def async_send_code_via_esphome(
             label,
         )
         async_flag_send_service_missing(hass, entry_id)
-    except Exception as err:
+    except Exception as err:  # noqa: BLE001 - a failed send must not raise into the entity
         _LOGGER.error("Failed to send %s: %s", label, err)
 
 
@@ -411,8 +410,8 @@ class LearnButton(OpenIRBlasterButtonBase):
                 saved_code,
             )
 
-        except Exception as err:
-            _LOGGER.error("Failed to save learned code: %s", err, exc_info=True)
+        except Exception:
+            _LOGGER.exception("Failed to save learned code")
         finally:
             # Release save guard and clear pending name. The callback itself
             # is registered for the entity's lifetime (see

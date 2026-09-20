@@ -939,3 +939,68 @@ async def test_deprecation_issue_survives_while_another_entry_remains(
     await hass.async_block_till_done()
 
     assert ir.async_get(hass).async_get_issue(DOMAIN, ISSUE_DEPRECATED) is not None
+
+
+async def test_deprecation_issue_supplies_the_url_placeholder(
+    hass: HomeAssistant, mock_config_entry_data: dict
+) -> None:
+    """hassfest forbids a URL inside a translation string.
+
+    The link is a placeholder, so the value has to be supplied where the
+    issue is raised or users see a literal {hair_url}.
+    """
+    from homeassistant.helpers import issue_registry as ir
+
+    from custom_components.openirblaster.const import HAIR_URL, ISSUE_DEPRECATED
+
+    entry = MockConfigEntry(domain=DOMAIN, data=mock_config_entry_data)
+    entry.add_to_hass(hass)
+
+    with patch(
+        "homeassistant.config_entries.ConfigEntries.async_forward_entry_setups",
+        return_value=True,
+    ):
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    issue = ir.async_get(hass).async_get_issue(DOMAIN, ISSUE_DEPRECATED)
+    assert issue.translation_placeholders == {"hair_url": HAIR_URL}
+
+
+def test_translation_strings_contain_no_urls() -> None:
+    """hassfest rejects inline URLs; keep them out of both files."""
+    import json
+    from pathlib import Path
+
+    component = Path(__file__).parent.parent / "custom_components" / "openirblaster"
+
+    def urls(node, path=""):
+        if isinstance(node, dict):
+            for key, value in node.items():
+                yield from urls(value, f"{path}.{key}")
+        elif isinstance(node, str) and ("http://" in node or "https://" in node):
+            yield path
+
+    for name in ("strings.json", "translations/en.json"):
+        found = list(urls(json.loads((component / name).read_text())))
+        assert not found, f"{name} has inline URLs at {found}"
+
+
+def test_manifest_keys_sorted_the_way_hassfest_wants() -> None:
+    """domain, then name, then everything else alphabetically."""
+    import json
+    from pathlib import Path
+
+    manifest = json.loads(
+        (
+            Path(__file__).parent.parent
+            / "custom_components"
+            / "openirblaster"
+            / "manifest.json"
+        ).read_text()
+    )
+    keys = list(manifest)
+
+    assert keys[0] == "domain"
+    assert keys[1] == "name"
+    assert keys[2:] == sorted(keys[2:]), f"unsorted tail: {keys[2:]}"

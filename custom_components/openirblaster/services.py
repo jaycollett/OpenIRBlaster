@@ -8,7 +8,6 @@ from functools import partial
 from pathlib import Path
 
 import voluptuous as vol
-
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import (
     HomeAssistant,

@@ -55,7 +55,10 @@ class CodeActivityEvent(EventEntity):
     _attr_has_entity_name = True
     _attr_should_poll = False
     _attr_translation_key = "code_activity"
-    _attr_event_types = [EVENT_TYPE_CODE_LEARNED, EVENT_TYPE_CODE_SAVED]
+    # Silencing RUF012 deliberately: _attr_event_types is a Home Assistant
+    # entity attribute declared on EventEntity, so ClassVar here would
+    # contradict the base class annotation.
+    _attr_event_types = [EVENT_TYPE_CODE_LEARNED, EVENT_TYPE_CODE_SAVED]  # noqa: RUF012
 
     def __init__(
         self,
