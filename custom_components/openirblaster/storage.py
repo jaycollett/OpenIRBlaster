@@ -263,9 +263,3 @@ class OpenIRBlasterStorage:
         }
 
         await self.async_save()
-
-    async def async_delete(self) -> None:
-        """Delete the storage file completely."""
-        _LOGGER.info("Deleting storage for entry %s", self.entry_id)
-        await self._store.async_remove()
-        self._data = {}

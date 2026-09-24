@@ -7,12 +7,24 @@
 The integration stores all learned codes in Home Assistant's storage area:
 
 ```
-<HA config>/.storage/openirblaster_<entry_id>.json
+<HA config>/.storage/openirblaster_<entry_id>
 ```
 
-`<entry_id>` is the config entry ID, visible in **Settings -> Devices & Services -> OpenIRBlaster** in the URL when you open the integration page (the long ID after `/config_entries/`).
+The file name has no extension. `<entry_id>` is the config entry ID, and there is one storage file per OpenIRBlaster device added to Home Assistant, so the quickest way to find yours is to list them:
 
-There is one storage file per OpenIRBlaster device added to Home Assistant.
+```bash
+ls <HA config>/.storage/openirblaster_*
+```
+
+Each file carries its own ID and device name under `data.device`, which is how you tell two blasters apart. To look an ID up first instead, `.storage/core.config_entries` lists every config entry with its integration and title, and the **Config entry** dropdown on any OpenIRBlaster action in **Developer Tools -> Actions** fills the ID in for you once you switch that action to YAML mode.
+
+## When You Remove the Integration
+
+From version 1.3.2, deleting an OpenIRBlaster entry in **Settings -> Devices & Services** leaves its storage file where it is. Home Assistant removes the device and its entities, and the file keeps every code, including the carrier frequency measured when each one was learned. The command-line exporter, `tools/openirblaster_to_wig.py`, can still convert it to HAIR's format after the integration is gone.
+
+Version 1.3.1 and earlier deleted the file along with the entry. On one of those versions, export or pluck your codes first, or update before you remove anything.
+
+Adding the same blaster again creates a new config entry with a new ID, and so a new, empty storage file. The old file stays alongside it and the integration does not read it. To bring the codes back into the new entry, copy them across with the [Safe Manual-Edit Procedure](#safe-manual-edit-procedure). Once the codes are somewhere you trust, you can delete the old file by hand.
 
 ## On-Disk Format
 
@@ -106,7 +118,7 @@ The carrier frequency from the same capture is what goes in `carrier_hz` (typica
 Always follow this sequence:
 
 1. **Stop Home Assistant** (full stop, not just a restart trigger from the UI - use your supervisor / `systemctl stop home-assistant` / container stop, whatever applies to your install).
-2. **Back up the file** first: `cp openirblaster_<entry_id>.json openirblaster_<entry_id>.json.bak`
+2. **Back up the file** first: `cp openirblaster_<entry_id> openirblaster_<entry_id>.bak`
 3. **Edit** the file with a JSON-aware editor (VS Code, Notepad++ with the JSON plugin, `jq`). Validate the JSON before saving.
 4. **Start Home Assistant** again. The integration loads the file on startup and creates a button entity for each code that has a unique `id`.
 
@@ -147,9 +159,9 @@ Do not edit `id` once a code has been used. If you must change the slug, delete 
 A quick sanity check from a shell:
 
 ```bash
-jq '.data.codes | length' openirblaster_<entry_id>.json   # number of codes
-jq '.data.codes | map(.id)' openirblaster_<entry_id>.json # list IDs - must be unique
-jq -e '.data.codes | map(.pulses | length) | max <= 2000' openirblaster_<entry_id>.json
+jq '.data.codes | length' openirblaster_<entry_id>   # number of codes
+jq '.data.codes | map(.id)' openirblaster_<entry_id> # list IDs - must be unique
+jq -e '.data.codes | map(.pulses | length) | max <= 2000' openirblaster_<entry_id>
 ```
 
 If any of those error, fix the file before restarting Home Assistant.

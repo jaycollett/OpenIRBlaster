@@ -30,6 +30,7 @@ from custom_components.openirblaster.wig_export import (
     normalize_pulses,
     pulses_to_pronto,
     read_storage,
+    resolve_storage_file,
     slugify,
 )
 
@@ -394,7 +395,82 @@ def test_cli_round_trip(tmp_path, capsys):
 
 def test_cli_missing_file_exits_nonzero(tmp_path, capsys):
     assert main([str(tmp_path / "nope.json")]) == 2
-    assert "does not exist" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "does not exist" in err
+    # The real file has no extension, so say so rather than leaving the
+    # user to guess at the name they were given by older docs.
+    assert ".storage/openirblaster_<entry_id>" in err
+    assert "openirblaster_<entry_id>.json" not in err
+
+
+# --- Forgiving storage paths -----------------------------------------
+#
+# The store key is written verbatim, so the file on disk is
+# openirblaster_<entry_id> with no extension. Releases up to 1.3.1
+# documented it with a .json suffix, and shell completion offers
+# whichever of the two exists, so both spellings have to land on the
+# same file.
+
+
+def test_resolve_storage_file_prefers_the_path_as_given(tmp_path):
+    exact = tmp_path / "openirblaster_ABC"
+    exact.write_text("{}")
+    decoy = tmp_path / "openirblaster_ABC.json"
+    decoy.write_text("{}")
+
+    assert resolve_storage_file(exact) == exact
+    assert resolve_storage_file(decoy) == decoy
+
+
+def test_resolve_storage_file_drops_a_json_suffix_that_is_not_there(tmp_path):
+    real = tmp_path / "openirblaster_ABC"
+    real.write_text("{}")
+
+    assert resolve_storage_file(tmp_path / "openirblaster_ABC.json") == real
+
+
+def test_resolve_storage_file_adds_a_json_suffix_when_that_is_the_file(tmp_path):
+    real = tmp_path / "openirblaster_ABC.json"
+    real.write_text("{}")
+
+    assert resolve_storage_file(tmp_path / "openirblaster_ABC") == real
+
+
+def test_resolve_storage_file_returns_none_when_neither_spelling_exists(tmp_path):
+    assert resolve_storage_file(tmp_path / "openirblaster_ABC") is None
+    assert resolve_storage_file(tmp_path / "openirblaster_ABC.json") is None
+
+
+def test_cli_falls_back_from_a_wrongly_suffixed_path(tmp_path, capsys):
+    source = tmp_path / "openirblaster_ABC"
+    source.write_text(
+        json.dumps({"version": 1, "data": _storage([_code("TV Power")])})
+    )
+    out = tmp_path / "wigs"
+
+    assert main([str(tmp_path / "openirblaster_ABC.json"), "-o", str(out)]) == 0
+
+    captured = capsys.readouterr()
+    assert len(list(out.glob("*.wig.json"))) == 1
+    assert "openirblaster_ABC.json does not exist" in captured.err
+    assert str(source) in captured.err
+
+
+def test_cli_falls_back_to_a_json_sibling(tmp_path, capsys):
+    source = tmp_path / "openirblaster_ABC.json"
+    source.write_text(
+        json.dumps({"version": 1, "data": _storage([_code("TV Power")])})
+    )
+    out = tmp_path / "wigs"
+
+    assert main([str(tmp_path / "openirblaster_ABC"), "-o", str(out)]) == 0
+
+    captured = capsys.readouterr()
+    written = list(out.glob("*.wig.json"))
+    assert len(written) == 1
+    assert str(source) in captured.err
+    # Provenance follows the file actually read, not the path typed.
+    assert json.loads(written[0].read_text())["converted_from"] == source.name
 
 
 def test_cli_reports_when_nothing_converts(tmp_path, capsys):

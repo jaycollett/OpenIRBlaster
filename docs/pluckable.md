@@ -10,7 +10,9 @@ Every code you learned here carries the carrier frequency measured at the moment
 
 Most remotes are 38 kHz and would not notice. A device that runs at 36 or 40 kHz would, and for those the difference is the code working or not working. The measured value exists in one place only, the integration's storage file, and re-learning cannot recover it.
 
-Plucking preserves it. So does the file export. Do one of them before you remove the integration or delete `.storage/openirblaster_<entry_id>.json`.
+Plucking preserves it. So does the file export. Do one of them before you delete `.storage/openirblaster_<entry_id>`. Plucking goes through this integration's service, so it needs the integration installed; the command-line export reads the file and does not.
+
+From version 1.3.2, removing the integration keeps that file, and you can delete it by hand once your codes are across. Version 1.3.1 and earlier deleted it when the integration entry was removed, so on those versions pluck or export first.
 
 ## How plucking works
 

@@ -25,7 +25,7 @@ For the project's elevator pitch and install instructions, see the [root README]
 - [Home Assistant Integration](home-assistant-integration.md) - Device setup, entities, services, and automation examples
 
 ### Reference
-- [Storage Format & Manual Editing](storage-format.md) - On-disk schema for `.storage/openirblaster_*.json` and the safe procedure for hand-editing it
+- [Storage Format & Manual Editing](storage-format.md) - On-disk schema for `.storage/openirblaster_*` and the safe procedure for hand-editing it
 - [Troubleshooting](troubleshooting.md) - Common issues and solutions
 
 ### Third-Party Hardware

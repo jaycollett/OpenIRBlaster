@@ -8,7 +8,7 @@ ways:
    service, run from the UI while the integration is still installed.
 2. Run directly as a script against a ``.storage`` file, for a user who
    already removed the integration:
-       python3 wig_export.py ~/.homeassistant/.storage/openirblaster_ABC.json
+       python3 wig_export.py ~/.homeassistant/.storage/openirblaster_ABC
 3. Copied anywhere on its own. It imports nothing from this package.
 
 The target format is HAIR's wig (https://github.com/DAB-LABS/HAIR). A
@@ -510,6 +510,26 @@ def export_storage_file(
 # --- CLI -------------------------------------------------------------
 
 
+def resolve_storage_file(path: Path) -> Path | None:
+    """Return the storage file the user meant, or None if there is none.
+
+    Home Assistant writes the store key verbatim, so the real file is
+    ``.storage/openirblaster_<entry_id>`` with no extension. Older
+    releases of this project documented it with a ``.json`` suffix, and
+    shell completion will happily hand over either name, so a path that
+    is only wrong by that suffix is resolved to the file next to it.
+    """
+    if path.is_file():
+        return path
+    if path.suffix == ".json":
+        sibling = path.with_name(path.name[: -len(".json")])
+    else:
+        sibling = path.with_name(path.name + ".json")
+    if sibling.is_file():
+        return sibling
+    return None
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="wig_export",
@@ -526,7 +546,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "storage_file",
         type=Path,
-        help="path to .storage/openirblaster_<entry_id>.json",
+        help="path to .storage/openirblaster_<entry_id> (no file extension)",
     )
     parser.add_argument(
         "-o",
@@ -552,22 +572,32 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    if not args.storage_file.is_file():
+    storage_file = resolve_storage_file(args.storage_file)
+    if storage_file is None:
         print(f"error: {args.storage_file} does not exist", file=sys.stderr)
+        print(
+            "The storage file has no extension. Look for "
+            ".storage/openirblaster_<entry_id>",
+            file=sys.stderr,
+        )
         return 2
+    if storage_file != args.storage_file:
+        print(
+            f"note: {args.storage_file} does not exist, reading "
+            f"{storage_file} instead",
+            file=sys.stderr,
+        )
 
     out_dir = args.out_dir or Path("hair/wigs")
 
     try:
-        data = read_storage(args.storage_file)
-        digest = "sha256:" + hashlib.sha256(
-            args.storage_file.read_bytes()
-        ).hexdigest()
+        data = read_storage(storage_file)
+        digest = "sha256:" + hashlib.sha256(storage_file.read_bytes()).hexdigest()
     except WigExportError as err:
         print(f"error: {err}", file=sys.stderr)
         return 1
     except (OSError, json.JSONDecodeError) as err:
-        print(f"error: could not read {args.storage_file}: {err}", file=sys.stderr)
+        print(f"error: could not read {storage_file}: {err}", file=sys.stderr)
         return 1
 
     try:
@@ -575,7 +605,7 @@ def main(argv: list[str] | None = None) -> int:
             data,
             out_dir,
             group_by=args.group_by,
-            source_filename=args.storage_file.name,
+            source_filename=storage_file.name,
             source_sha256=digest,
         )
     except WigExportError as err:

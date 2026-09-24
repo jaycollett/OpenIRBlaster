@@ -16,7 +16,7 @@ So this integration is winding down. It still works, it is not going to break to
 
 The hardware is unaffected and is where this project continues. OpenIRBlaster is a board, a case, a bill of materials and a firmware image, none of which HAIR provides.
 
-**If you are already using this integration:** move your codes across before you uninstall anything or delete its storage file. Your stored codes hold the carrier frequency measured when each was learned, and the new infrared platform does not report one, so anything re-learned later comes back at the 38 kHz default. See [Moving your codes to HAIR](#moving-your-codes-to-hair). Nothing is deleted and your setup keeps working while you check the result.
+**If you are already using this integration:** move your codes across before you delete its storage file. From version 1.3.2, removing the integration leaves that file in place. Version 1.3.1 and earlier deleted it along with the integration, so on those versions update or move your codes first. Your stored codes hold the carrier frequency measured when each was learned, and the new infrared platform does not report one, so anything re-learned later comes back at the 38 kHz default. See [Moving your codes to HAIR](#moving-your-codes-to-hair). Nothing is deleted and your setup keeps working while you check the result.
 
 **If you are new here:** build the hardware, flash it, and use it with HAIR.
 
@@ -44,7 +44,11 @@ Every code you learned here carries the carrier frequency measured when it was c
 
 Most remotes are 38 kHz and would not notice. A device running at 36 or 40 kHz would, and for those the difference is the code working or not working. That measured value exists in one place only, this integration's storage file, and re-learning cannot bring it back.
 
-Both routes below preserve it. Take one of them before you remove the integration or delete `.storage/openirblaster_<entry_id>.json`.
+Both routes below preserve it. Take one of them before you delete `.storage/openirblaster_<entry_id>`.
+
+From version 1.3.2, removing the integration in Home Assistant keeps that file, so your codes are still on disk afterwards and the command-line export below can convert them. Version 1.3.1 and earlier deleted the file when you deleted the integration entry, so if you are on one of those versions, update or export first.
+
+If you remove a blaster and add it again, Home Assistant gives it a new entry ID and a new, empty storage file. The old file stays next to it with your codes in it. Once those codes are safely in HAIR you can delete the old file by hand.
 
 ### Pluck from HAIR (recommended)
 
@@ -71,11 +75,13 @@ Files land in `hair/wigs/` in your Home Assistant config directory, which is whe
 
 HAIR treats one file as one remote, so the **Split into** option matters if your library covers several devices. Splitting by tag or by the first word of each code name gives you one remote per device instead of one long list. You can re-split inside HAIR later either way.
 
-From the command line, which is the fallback if you already removed the integration:
+From the command line, which also works after you have removed the integration (on 1.3.2 or later, where removal keeps the file):
 
 ```bash
-python3 tools/openirblaster_to_wig.py ~/.homeassistant/.storage/openirblaster_<entry_id>.json
+python3 tools/openirblaster_to_wig.py ~/.homeassistant/.storage/openirblaster_<entry_id>
 ```
+
+The file name has no extension, and there is one per blaster, so `ls ~/.homeassistant/.storage/openirblaster_*` shows you what to pass.
 
 Run `--help` for output directory and grouping options. It needs nothing but Python 3.12 or newer and never writes to the file it reads. `custom_components/openirblaster/wig_export.py` is the whole implementation in one file with no imports from anything else, so you can copy that single file somewhere and run it if the repository is not handy.
 
@@ -83,7 +89,7 @@ Run `--help` for output directory and grouping options. It needs nothing but Pyt
 
 Check the codes work in HAIR before removing anything here. If a code did not convert, or carried tags or notes, the file export writes `openirblaster-export-receipt.txt` next to the wigs listing what was dropped and why. Tags and notes have no equivalent in HAIR's format, so they are reported rather than silently merged.
 
-Keep your `.storage` file until you are satisfied.
+Keep your `.storage` file until you are satisfied. Removing the integration does not touch it, so when you no longer need it, delete it by hand.
 
 ## Installation
 

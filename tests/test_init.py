@@ -905,6 +905,46 @@ async def test_deprecation_issue_cleared_when_last_entry_removed(
     assert ir.async_get(hass).async_get_issue(DOMAIN, ISSUE_DEPRECATED) is None
 
 
+async def test_remove_entry_keeps_the_code_library(
+    hass: HomeAssistant,
+    hass_storage: dict,
+    mock_config_entry_data: dict,
+    caplog,
+) -> None:
+    """Deleting the config entry must leave its storage file alone.
+
+    The file is the only copy of each code's measured carrier, and HAIR's
+    storage pluck provider reads it after the integration is gone. Up to
+    1.3.1 removal deleted it.
+    """
+    import logging
+
+    entry = MockConfigEntry(domain=DOMAIN, data=mock_config_entry_data)
+    entry.add_to_hass(hass)
+    _seed_storage_with_codes(hass_storage, entry)
+    key = f"openirblaster_{entry.entry_id}"
+
+    with patch(
+        "homeassistant.config_entries.ConfigEntries.async_forward_entry_setups",
+        return_value=True,
+    ):
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    with caplog.at_level(logging.INFO, logger="custom_components.openirblaster"):
+        await hass.config_entries.async_remove(entry.entry_id)
+        await hass.async_block_till_done()
+
+    assert hass.config_entries.async_get_entry(entry.entry_id) is None
+    assert key in hass_storage
+    assert [code["id"] for code in hass_storage[key]["data"]["codes"]] == [
+        "rgbyellow",
+        "thing_delete",
+    ]
+    assert hass_storage[key]["data"]["codes"][0]["carrier_hz"] == 38000
+    assert f".storage/{key}" in caplog.text
+
+
 async def test_deprecation_issue_survives_while_another_entry_remains(
     hass: HomeAssistant, mock_config_entry_data: dict
 ) -> None:

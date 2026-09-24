@@ -31,6 +31,7 @@ from .const import (
     HAIR_URL,
     ISSUE_DEPRECATED,
     STATE_ARMED,
+    STORAGE_KEY_PREFIX,
     UNIQUE_ID_CODE_ACTIVITY_EVENT,
     UNIQUE_ID_CODE_BUTTON,
     UNIQUE_ID_CODE_NAME_INPUT,
@@ -549,16 +550,30 @@ async def async_unload_entry(
 
 
 async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Handle removal of a config entry (delete its storage file)."""
-    _LOGGER.info("Removing OpenIRBlaster config entry %s", entry.entry_id)
+    """Handle removal of a config entry, keeping its code library on disk.
 
-    # Delete storage file for this entry. Device and entity registry
-    # entries are removed automatically by core when the entry is removed.
-    storage = OpenIRBlasterStorage(hass, entry.entry_id)
-    await storage.async_delete()
+    The storage file is deliberately left behind. It is the only copy of
+    each code's measured carrier frequency, and HAIR's storage pluck
+    provider and the wig exporter both read it straight from disk, so
+    they keep working after the integration is gone. Releases up to
+    1.3.1 deleted it here.
+
+    Adding the same blaster again creates a new config entry with a new
+    ID and so a new, empty file. The old file stays where it is until
+    the user deletes it by hand.
+    """
+    # Device and entity registry entries are removed automatically by
+    # core when the entry is removed.
 
     # The deprecation notice is domain-keyed, so it has to be cleared by
     # hand when the last entry goes.
     _async_clear_deprecation_if_last_entry(hass, entry.entry_id)
 
-    _LOGGER.info("Cleanup complete for entry %s: storage deleted", entry.entry_id)
+    _LOGGER.info(
+        "Removed OpenIRBlaster config entry %s. The code library was kept at "
+        ".storage/%s%s so HAIR can pluck it or the wig exporter can convert "
+        "it; delete that file by hand once you no longer need it",
+        entry.entry_id,
+        STORAGE_KEY_PREFIX,
+        entry.entry_id,
+    )

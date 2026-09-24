@@ -42,6 +42,7 @@ from .const import (
     STATE_CANCELLED,
     STATE_RECEIVED,
     STATE_TIMEOUT,
+    STORAGE_KEY_PREFIX,
     WIG_OUTPUT_SUBDIR,
 )
 from .data import OpenIRBlasterData
@@ -502,7 +503,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                     storage_data,
                     out_dir,
                     group_by=group_by,
-                    source_filename=f"openirblaster_{entry_id}.json",
+                    source_filename=f"{STORAGE_KEY_PREFIX}{entry_id}",
                 )
             )
         except WigExportError as err:

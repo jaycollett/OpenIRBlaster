@@ -54,8 +54,8 @@ WIG_OUTPUT_SUBDIR = "hair/wigs"
 
 # Deprecation (v1.2.4). Home Assistant core gained an `infrared` entity
 # domain in 2026.4, and HAIR builds a full IR code manager on top of it.
-# This integration is winding down; the repair issue points users at the
-# export before they uninstall.
+# This integration is winding down; the repair issue points users at HAIR
+# and the export. Removing an entry keeps its storage file (from 1.3.2).
 ISSUE_DEPRECATED = "deprecated_integration"
 HAIR_URL = "https://github.com/DAB-LABS/HAIR"
 

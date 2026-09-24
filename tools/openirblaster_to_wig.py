@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Convert an OpenIRBlaster code library into HAIR .wig.json files.
 
-    python3 tools/openirblaster_to_wig.py ~/.homeassistant/.storage/openirblaster_ABC.json
+    python3 tools/openirblaster_to_wig.py ~/.homeassistant/.storage/openirblaster_ABC
 
 This is a thin launcher. All of the work lives in
 custom_components/openirblaster/wig_export.py, which is pure stdlib and

@@ -112,7 +112,7 @@ data:
   discard_pending: true   # omit (default false) to protect a pending code
 ```
 
-The `config_entry_id` for all services can be picked from a dropdown in the UI service editor, or found in the URL of the integration page.
+The `config_entry_id` for all services can be picked from a dropdown in the UI action editor, and switching that action to YAML mode shows the ID itself.
 
 ## Renaming a Code
 
@@ -268,12 +268,14 @@ On every startup the integration tidies up after older versions (all idempotent,
 
 ## Storage
 
-Learned codes are stored in `.storage/openirblaster_{entry_id}.json` and include:
+Learned codes are stored in `.storage/openirblaster_{entry_id}` and include:
 - Display name
 - Unique ID (slugified)
 - Carrier frequency (typically 38kHz)
 - Pulse timing array
 - Timestamp
+
+Removing the integration keeps this file from version 1.3.2 onwards; 1.3.1 and earlier deleted it with the entry. Delete it by hand once you no longer need the codes. See [When You Remove the Integration](storage-format.md#when-you-remove-the-integration).
 
 For the full schema and a safe procedure for editing the file by hand, see [Storage Format & Manual Editing](storage-format.md).
 

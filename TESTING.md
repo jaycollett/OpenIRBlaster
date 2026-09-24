@@ -218,7 +218,7 @@ If you encounter issues:
 2. **Verify Device**: Ensure ESPHome device is responding
 3. **Test Manually**: Use Developer Tools to test services directly
 4. **Check Events**: Listen for `esphome.openirblaster_learned` events
-5. **Storage**: Verify `.storage/openirblaster_*.json` file exists and is valid JSON
+5. **Storage**: Verify the `.storage/openirblaster_*` file exists and is valid JSON
 
 ## Next Steps
 

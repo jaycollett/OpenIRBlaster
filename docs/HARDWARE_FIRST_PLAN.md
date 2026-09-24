@@ -207,7 +207,7 @@ The wider point is worth stating plainly, because it inverts the concern behind 
 
 ### 3.2 Source schema, OpenIRBlaster
 
-Storage lives at `<HA config>/.storage/openirblaster_<entry_id>.json`, one file per device, in Home Assistant's standard `Store` envelope with the payload under `data`. The envelope is built at `custom_components/openirblaster/storage.py:84-92`; the store is constructed at `storage.py:69-74` with `STORAGE_VERSION` and `STORAGE_MINOR_VERSION` from `const.py:35-36`, currently 1 and 1.
+Storage lives at `<HA config>/.storage/openirblaster_<entry_id>`, one file per device, in Home Assistant's standard `Store` envelope with the payload under `data`. The envelope is built at `custom_components/openirblaster/storage.py:84-92`; the store is constructed at `storage.py:69-74` with `STORAGE_VERSION` and `STORAGE_MINOR_VERSION` from `const.py:35-36`, currently 1 and 1.
 
 One code object, written at `storage.py:143-152`:
 
